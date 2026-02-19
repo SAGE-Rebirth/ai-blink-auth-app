@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+deepface
+pymongo
+python-multipart
+numpy
+opencv-python-headless
+pydantic
