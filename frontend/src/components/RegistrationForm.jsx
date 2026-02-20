@@ -143,8 +143,16 @@ const RegistrationForm = () => {
 
                     {!captureComplete ? (
                         <>
-                            <BlinkDetector onBlinkDetected={handleBlinkDetected} />
-                            <p className="instruction">{CAPTURE_HINTS[captureCount] || 'Hold still and blink'}</p>
+                            <BlinkDetector
+                                onBlinkDetected={handleBlinkDetected}
+                                autoCapture={captureCount > 0}
+                                countdownSecs={3}
+                            />
+                            <p className="instruction">
+                                {captureCount === 0
+                                    ? CAPTURE_HINTS[0]
+                                    : `${CAPTURE_HINTS[captureCount]} — hold still`}
+                            </p>
                         </>
                     ) : (
                         <div style={{ textAlign: 'center', padding: '1rem 0' }}>
