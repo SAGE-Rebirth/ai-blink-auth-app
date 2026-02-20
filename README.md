@@ -1,125 +1,409 @@
-# AI Blink Verification Platform
+<h1>AI Blink Verification System</h1>
 
-A secure, biometric authentication system that uses facial recognition and liveness detection (blink) to verify user identity. Built with React, FastAPI, and DeepFace.
+<p>
+A full-stack biometric authentication system that uses <b>facial recognition</b> and <b>liveness detection</b> (blink capture) to verify user identity, preventing spoofing attacks. Built with a <b>FastAPI</b> backend and a <b>React + Vite</b> frontend.
+</p>
 
-## Features
+---
 
-- **Biometric Registration**: Capture 3 face angles to create a robust face embedding.
-- **Liveness Detection**: Client-side blink detection using MediaPipe ensures the user is real and present.
-- **Face Verification**: Server-side DeepFace (ArcFace model) comparison for high-accuracy identity verification.
-- **Admin Dashboard**: View, edit, and delete registered users.
-- **User Profile**: Update personal details, re-capture face ID, or delete account.
-- **Security**: JWT-based authentication and protected routes.
+<h2>Table of Contents</h2>
 
-## Prerequisites
+<ul>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#architecture">Architecture</a></li>
+  <li><a href="#backend">Backend</a></li>
+  <li><a href="#frontend">Frontend</a></li>
+  <li><a href="#security">Security</a></li>
+  <li><a href="#setup">Setup &amp; Installation</a></li>
+  <li><a href="#environment">Environment Variables</a></li>
+  <li><a href="#api">API Reference</a></li>
+  <li><a href="#changelog">Full Changelog</a></li>
+</ul>
 
-Before starting, ensure you have the following installed:
+---
 
-- **Node.js** (v18 or higher)
-- **Python** (v3.9 or higher)
-- **MongoDB** (Local or Atlas) - *Ensure it is running!*
+<h2 id="overview">Overview</h2>
 
-## Setup & Installation
+<p>
+The AI Blink Verification System allows users to register and authenticate using only their face. During registration, three blink-captured images are taken and converted into facial embeddings using <b>DeepFace (ArcFace model)</b>. At login, a fresh blink capture is compared against the stored embeddings using cosine distance. A verified match returns a short-lived <b>JWT access token</b> and a long-lived <b>refresh token</b>.
+</p>
 
-### 1. Clone the Repository
-```bash
-git clone <repository-url>
-cd ai-blink-verification
+---
+
+<h2 id="architecture">Architecture</h2>
+
+```
+Ai blink system/
+├── backend/
+│   ├── core/
+│   │   ├── config.py          # Pydantic v2 settings (env-validated)
+│   │   ├── database.py        # MongoDB manager with auto-indexes
+│   │   ├── limiter.py         # slowapi rate limiter (Redis + memory fallback)
+│   │   └── security.py        # JWT access & refresh token logic
+│   ├── routers/
+│   │   └── auth.py            # All auth & admin endpoints
+│   ├── main.py                # FastAPI app, middleware, lifespan
+│   ├── requirements.txt
+│   └── .env.example
+└── frontend/
+    └── src/
+        ├── components/
+        │   ├── BlinkDetector.jsx
+        │   ├── Login.jsx
+        │   ├── RegistrationForm.jsx
+        │   ├── Profile.jsx
+        │   ├── AdminDashboard.jsx
+        │   └── ConfirmDialog.jsx
+        ├── services/
+        │   └── api.js
+        ├── utils/
+        │   └── faceMesh.js
+        ├── App.jsx
+        ├── App.css
+        └── index.css
 ```
 
-### 2. Backend Setup
-Navigate to the `backend` directory and set up the Python environment.
+---
 
-**Mac/Linux:**
+<h2 id="backend">Backend</h2>
+
+<h2>Technology Stack</h2>
+
+| Package | Purpose |
+|---|---|
+| `fastapi` | HTTP API framework |
+| `uvicorn[standard]` | ASGI server |
+| `deepface` | Facial embedding extraction (ArcFace) |
+| `pymongo` | MongoDB driver |
+| `pydantic-settings` | Pydantic v2 validated configuration |
+| `python-jose[cryptography]` | JWT encoding and decoding |
+| `slowapi` | Request rate limiting |
+| `redis` | Redis client for persistent rate limiting |
+| `opencv-python-headless` | Image decoding |
+| `numpy` | Cosine distance computation |
+| `python-dotenv` | `.env` file loading |
+
+<h2>Configuration — <code>core/config.py</code></h2>
+
+<p>
+Migrated from manual <code>os.getenv()</code> calls to <b>Pydantic v2 <code>BaseSettings</code></b>. The settings class provides:
+</p>
+
+<ul>
+  <li>Automatic <code>.env</code> file loading with type coercion</li>
+  <li>Field validators that reject startup if <code>SECRET_KEY</code> is shorter than 16 characters or if <code>COLLECTION_NAME</code> is blank</li>
+  <li>Computed properties: <code>effective_refresh_secret</code> (falls back to <code>SECRET_KEY</code>) and <code>max_b64_chars</code> (image size limit in base64 characters)</li>
+  <li>New fields: <code>REFRESH_SECRET_KEY</code>, <code>REFRESH_TOKEN_EXPIRE_DAYS</code>, <code>FACE_DISTANCE_THRESHOLD</code>, <code>MAX_IMAGE_SIZE_MB</code>, <code>REDIS_URL</code>, <code>RATE_LIMIT_FACE_VERIFY</code></li>
+</ul>
+
+<h2>Database — <code>core/database.py</code></h2>
+
+<ul>
+  <li>All <code>print()</code> statements replaced with <b>structured named loggers</b></li>
+  <li>Added <code>_ensure_indexes()</code>: runs on startup and creates a <b>unique index on <code>phone</code></b> and an ascending index on <code>created_at</code>, making every user lookup O(log n)</li>
+  <li>Added <code>socketTimeoutMS</code> and <code>connectTimeoutMS</code> for a more robust connection</li>
+</ul>
+
+<h2>Security — <code>core/security.py</code></h2>
+
+<ul>
+  <li>Introduced a <b>refresh token system</b>: <code>create_refresh_token()</code> and <code>decode_refresh_token()</code></li>
+  <li>Both token types carry a <code>type</code> claim (<code>"access"</code> or <code>"refresh"</code>) to prevent cross-use</li>
+  <li>Access tokens expire in <b>15 minutes</b> (configurable); refresh tokens expire in <b>7 days</b> (configurable)</li>
+  <li>Replaced all <code>print()</code> calls with structured logging</li>
+</ul>
+
+<h2>Rate Limiter — <code>core/limiter.py</code></h2>
+
+<ul>
+  <li>Uses <b>slowapi</b> with a <b>Redis backend</b> for rate limiting that persists across server restarts and multiple workers</li>
+  <li>On startup, Redis is probed with a <b>2-second connect timeout</b>. If Redis is unavailable, the limiter falls back to <b>in-memory storage</b> automatically and logs a warning — the server continues to operate normally</li>
+  <li>Extracted into its own module (<code>core/limiter.py</code>) to avoid circular imports between <code>main.py</code> and <code>routers/auth.py</code></li>
+</ul>
+
+<h2>Main Application — <code>main.py</code></h2>
+
+<ul>
+  <li><b>Structured logging</b>: configured globally with timestamped, level-prefixed format. No <code>print()</code> statements remain</li>
+  <li><b>DeepFace model warm-up</b>: <code>DeepFace.build_model()</code> is called during the lifespan startup event, so the model is downloaded and initialised before any request arrives, eliminating cold-start lag</li>
+  <li><b>Security headers middleware</b>: every response receives the following headers automatically:
+    <ul>
+      <li><code>Strict-Transport-Security</code>: enforces HTTPS for one year</li>
+      <li><code>X-Frame-Options: DENY</code>: prevents clickjacking</li>
+      <li><code>X-Content-Type-Options: nosniff</code>: prevents MIME sniffing</li>
+      <li><code>Referrer-Policy: no-referrer</code></li>
+      <li><code>Cache-Control: no-store</code></li>
+      <li><code>Content-Security-Policy</code>: restricts resource origins</li>
+      <li><code>Permissions-Policy</code>: locks down geolocation and microphone; permits camera for self</li>
+      <li><code>Server</code> header is removed to prevent fingerprinting</li>
+    </ul>
+  </li>
+  <li>CORS updated to explicitly allow <code>X-Admin-Secret</code> header</li>
+  <li>API version bumped to <b>v3.0.0</b></li>
+</ul>
+
+<h2>Auth Router — <code>routers/auth.py</code></h2>
+
+<ul>
+  <li><b>Async DeepFace processing</b>: all calls to <code>DeepFace.represent()</code> run in a thread-pool executor via <code>asyncio.get_event_loop().run_in_executor()</code>. Multiple images are processed concurrently using <code>asyncio.gather()</code>, so the event loop is never blocked during CPU-intensive work</li>
+  <li><b>Image size guard</b>: base64 payload strings are checked against <code>MAX_IMAGE_SIZE_MB</code> before decoding. Images that exceed the limit receive a <code>413 Request Entity Too Large</code> response immediately</li>
+  <li><b>slowapi rate limit</b> on <code>POST /auth/verify-face</code>: 5 requests per minute per IP address (configurable via <code>RATE_LIMIT_FACE_VERIFY</code>)</li>
+  <li><b>Refresh token endpoint</b>: <code>POST /auth/refresh</code> accepts a valid refresh token and returns a new access token, allowing users to stay logged in without re-scanning their face</li>
+  <li><code>POST /auth/verify-face</code> now returns both <code>access_token</code> and <code>refresh_token</code> on success</li>
+  <li>Face distance threshold is configurable via <code>FACE_DISTANCE_THRESHOLD</code> in <code>.env</code></li>
+  <li>All <code>print()</code> calls replaced with structured logging</li>
+  <li>Admin endpoints protected by <code>verify_admin_secret</code> dependency (<code>X-Admin-Secret</code> header)</li>
+</ul>
+
+---
+
+<h2 id="frontend">Frontend</h2>
+
+<h2>Authentication State — <code>App.jsx</code></h2>
+
+<ul>
+  <li>Introduced <b><code>AuthContext</code></b>: authentication state is derived globally from <code>localStorage</code> and exposed via a <code>useAuth()</code> hook, eliminating prop drilling across all components</li>
+  <li>Listens for the <code>auth:logout</code> custom event (dispatched by the 401 interceptor) to automatically redirect the user to the login page</li>
+  <li><code>handleLogout()</code> uses the new <code>clearTokens()</code> helper to remove both the access and refresh tokens</li>
+</ul>
+
+<h2>API Service — <code>services/api.js</code></h2>
+
+<ul>
+  <li>Added <b>token storage helpers</b>: <code>storeTokens({ access_token, refresh_token })</code> and <code>clearTokens()</code></li>
+  <li><b>Silent token refresh</b>: the 401 response interceptor now attempts to use the stored refresh token to obtain a new access token before giving up. Parallel requests that fail during a refresh are queued and retried once the new token is issued. Only if the refresh itself fails does the interceptor clear tokens and fire <code>auth:logout</code></li>
+</ul>
+
+<h2>BlinkDetector — <code>components/BlinkDetector.jsx</code></h2>
+
+<ul>
+  <li><b>Memory leak fix</b>: <code>camera.stop()</code> and <code>faceMesh.close()</code> are called in the <code>useEffect</code> cleanup function</li>
+  <li><b>Stale closure fix</b>: blink detection logic is held in a <code>useRef</code> to always access the latest state</li>
+  <li><b>Blink cooldown</b>: a 1,200 ms cooldown prevents rapid double-detections</li>
+  <li>Visual EAR (Eye Aspect Ratio) meter drawn on the canvas overlay</li>
+</ul>
+
+<h2>RegistrationForm — <code>components/RegistrationForm.jsx</code></h2>
+
+<ul>
+  <li><b>Race condition fix</b>: the captured images list is held in a <code>useRef</code> rather than state, preventing stale closures from capturing more than three images</li>
+  <li>Phone number format validated against a regex (<code>/^\+?\d{7,15}$/</code>) before submission</li>
+  <li>Uses <code>storeTokens()</code> to save both tokens on successful registration</li>
+</ul>
+
+<h2>Login — <code>components/Login.jsx</code></h2>
+
+<ul>
+  <li>Uses <code>AuthContext</code> (no prop drilling)</li>
+  <li><b>Double-submission guard</b>: a <code>verifying</code> ref prevents a second face verification being triggered by rapid consecutive blinks</li>
+  <li>Structured alert state (<code>{ type, text }</code>) replaces fragile string matching for success and error messages</li>
+  <li>Calls <code>storeTokens()</code> on success so both the access and refresh tokens are persisted</li>
+</ul>
+
+<h2>Profile — <code>components/Profile.jsx</code></h2>
+
+<ul>
+  <li><code>handleLogout</code> removed from <code>useEffect</code> dependencies, preventing spurious re-fetches on every render</li>
+  <li><code>window.confirm()</code> replaced with the <b><code>ConfirmDialog</code></b> modal component</li>
+  <li>Errors displayed via the <code>getErrorMessage()</code> helper for consistent formatting</li>
+</ul>
+
+<h2>AdminDashboard — <code>components/AdminDashboard.jsx</code></h2>
+
+<ul>
+  <li>Removed invalid <code>&lt;style jsx&gt;</code> tag (caused a runtime error in Vite)</li>
+  <li>Added an <b>admin secret authentication gate</b>: the secret is validated against the backend before any user data is displayed</li>
+  <li><code>window.alert()</code> and <code>window.confirm()</code> replaced with <code>ConfirmDialog</code> and structured alert state</li>
+  <li>Admin secret forwarded as the <code>X-Admin-Secret</code> header on all admin API calls</li>
+</ul>
+
+<h2>ConfirmDialog — <code>components/ConfirmDialog.jsx</code></h2>
+
+<p>
+New component that replaces all browser-native <code>window.confirm()</code> calls. Features an animated modal with a backdrop click to dismiss and optional danger styling.
+</p>
+
+<h2>Design System — <code>index.css</code> &amp; <code>App.css</code></h2>
+
+<ul>
+  <li>Complete dark theme with CSS custom properties for colours, radii, and shadows</li>
+  <li><b>Google Fonts (Inter)</b> loaded for all body text</li>
+  <li>Glassmorphism cards, smooth gradient background, and micro-animations throughout</li>
+  <li>Removed the <code>prefers-color-scheme: light</code> media query that was overriding the dark theme</li>
+  <li>Premium component styles: glassmorphic nav, button variants, focus-glow inputs, webcam overlay, progress dots, admin table, modal backdrop, and fully responsive breakpoints</li>
+</ul>
+
+---
+
+<h2 id="security">Security Summary</h2>
+
+| Measure | Detail |
+|---|---|
+| <b>JWT Access Tokens</b> | Short-lived (15 min). Type claim prevents cross-use with refresh tokens |
+| <b>JWT Refresh Tokens</b> | Long-lived (7 days). Stored in <code>localStorage</code>; silently exchanged by the 401 interceptor |
+| <b>Secret Key Enforcement</b> | Application refuses to start if <code>SECRET_KEY</code> is absent or fewer than 16 characters |
+| <b>Admin Endpoints</b> | Protected by <code>X-Admin-Secret</code> header; returns <code>503</code> if unconfigured |
+| <b>Rate Limiting</b> | 5 face verification attempts per minute per IP; Redis-backed with in-memory fallback |
+| <b>Image Size Guard</b> | Base64 payloads exceeding <code>MAX_IMAGE_SIZE_MB</code> are rejected before decoding |
+| <b>Security Headers</b> | HSTS, X-Frame-Options, CSP, XCTO, Referrer-Policy, Permissions-Policy on every response |
+| <b>CORS</b> | Restricted to <code>http://localhost:5173</code> with explicit methods and headers |
+| <b>MongoDB Indexes</b> | Unique index on <code>phone</code> enforces data integrity and speeds up all lookups |
+
+---
+
+<h2 id="setup">Setup &amp; Installation</h2>
+
+<h2>Prerequisites</h2>
+
+<ul>
+  <li>Python 3.10 or higher</li>
+  <li>Node.js 18 or higher</li>
+  <li>MongoDB (running locally or a cloud URI)</li>
+  <li>Redis (optional — the app falls back to in-memory rate limiting if unavailable)</li>
+</ul>
+
+<h2>Backend</h2>
+
 ```bash
 cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
 
-**Windows:**
-```bash
-cd backend
+# Create and activate a virtual environment
 python -m venv venv
-.\venv\Scripts\activate
+venv\Scripts\activate   # Windows
+# source venv/bin/activate  # macOS / Linux
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-**Environment Variables:**
-Create a `.env` file in the `backend` folder:
-```env
-MONGO_URL=mongodb://localhost:27017  # or your Atlas URL
-DB_NAME=ai_blink_db
-SECRET_KEY=your_super_secret_key_here
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-DEEPFACE_MODEL=ArcFace
-```
+# Copy and configure environment variables
+copy .env.example .env
+# Edit .env and fill in all required values (see below)
 
-**Run the Backend:**
-```bash
+# Start the server
 uvicorn main:app --reload
 ```
-*The API will be available at `http://localhost:8000`*
 
-### 3. Frontend Setup
-Open a new terminal, navigate to the `frontend` directory.
+<h2>Frontend</h2>
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-*The App will be available at `http://localhost:5173`*
 
-## Usage
+The frontend will be available at `http://localhost:5173`.
 
-1.  **Register**: Go to `Register`, enter details, and capture your face 3 times.
-2.  **Login**: Enter your registered phone number.
-3.  **Blink**: Follow the on-screen prompt to blink. This captures a frame for verification.
-4.  **Admin**: Click the `Admin` tab to manage users.
-- **Profile**: Once logged in, you can update your details or face ID.
+---
 
-## API Endpoints
+<h2 id="environment">Environment Variables</h2>
 
-### Authentication & User Management
+<p>Copy <code>backend/.env.example</code> to <code>backend/.env</code> and set the following values.</p>
 
-| Method | Endpoint | Description | Auth Required |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/auth/register` | Register a new user with face embeddings | No |
-| `POST` | `/auth/check-user` | Check if a user exists by phone number | No |
-| `POST` | `/auth/verify-face` | Verify user identity via face blink | No |
-| `GET` | `/auth/profile` | Get current user's profile details | Yes |
-| `PUT` | `/auth/profile` | Update user profile (name, masked ID) | Yes |
-| `PUT` | `/auth/profile/face` | Update user's Face ID (re-capture) | Yes |
-| `DELETE` | `/auth/profile` | Delete current user's account | Yes |
+<h2>Required</h2>
 
-### Administration
+| Variable | Description |
+|---|---|
+| <code>COLLECTION_NAME</code> | MongoDB collection for user data (e.g. <code>users_v2</code>) |
+| <code>SECRET_KEY</code> | JWT signing secret — must be at least 16 characters. Generate with: <code>python -c "import secrets; print(secrets.token_hex(32))"</code> |
 
-| Method | Endpoint | Description | Auth Required |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/auth/admin/users` | List all registered users | No* |
-| `PUT` | `/auth/admin/users/{phone}` | Update a specific user by phone | No* |
-| `DELETE` | `/auth/admin/users/{phone}`| Delete a specific user by phone | No* |
+<h2>Recommended</h2>
 
-*\*Note: Admin endpoints currently do not enforce role-based access control for demonstration purposes.*
+| Variable | Default | Description |
+|---|---|---|
+| <code>REFRESH_SECRET_KEY</code> | Falls back to <code>SECRET_KEY</code> | Separate signing secret for refresh tokens |
+| <code>ADMIN_SECRET</code> | *(empty — disables admin endpoints)* | Password for <code>X-Admin-Secret</code> header |
+| <code>MONGO_URL</code> | <code>mongodb://localhost:27017</code> | MongoDB connection string |
+| <code>DB_NAME</code> | <code>ai_blink_db</code> | MongoDB database name |
 
-## Performance
-- **Latency Logging**: The backend logs the processing time for every request in the server console (e.g., `Time: 120ms`).
+<h2>Optional</h2>
 
-## Dependencies
-Major libraries used in this project:
+| Variable | Default | Description |
+|---|---|---|
+| <code>ACCESS_TOKEN_EXPIRE_MINUTES</code> | <code>15</code> | Access token lifetime in minutes |
+| <code>REFRESH_TOKEN_EXPIRE_DAYS</code> | <code>7</code> | Refresh token lifetime in days |
+| <code>DEEPFACE_MODEL</code> | <code>ArcFace</code> | DeepFace face recognition model |
+| <code>FACE_DISTANCE_THRESHOLD</code> | <code>0.40</code> | Cosine distance threshold for a match (lower = stricter) |
+| <code>MAX_IMAGE_SIZE_MB</code> | <code>5.0</code> | Maximum image payload size in megabytes |
+| <code>REDIS_URL</code> | <code>redis://localhost:6379</code> | Redis connection URI for rate limiting |
+| <code>RATE_LIMIT_FACE_VERIFY</code> | <code>5/minute</code> | Rate limit for the face verification endpoint |
 
-**Backend:**
-- `fastapi`: Web framework
-- `deepface`: Face recognition and analysis
-- `pymongo`: MongoDB driver
-- `python-jose`: JWT token handling
-- `opencv-python-headless`: Image processing
+---
 
-**Frontend:**
-- `react`: UI library
-- `vite`: Build tool
-- `@mediapipe/face_mesh`: Face landmark detection (for blinks)
-- `react-webcam`: Camera handling
-- `axios`: API requests
+<h2 id="api">API Reference</h2>
+
+<p>Full interactive documentation is available at <code>http://localhost:8000/docs</code> when the server is running.</p>
+
+<h2>Public Endpoints</h2>
+
+| Method | Path | Description |
+|---|---|---|
+| <code>POST</code> | <code>/auth/register</code> | Register a new user with name, phone, and 3 face images |
+| <code>POST</code> | <code>/auth/check-user</code> | Check whether a phone number is registered |
+| <code>POST</code> | <code>/auth/verify-face</code> | Verify face and receive access + refresh tokens |
+| <code>POST</code> | <code>/auth/refresh</code> | Exchange a refresh token for a new access token |
+| <code>GET</code> | <code>/health</code> | Server and database health check |
+
+<h2>Authenticated Endpoints (Bearer Token Required)</h2>
+
+| Method | Path | Description |
+|---|---|---|
+| <code>GET</code> | <code>/auth/profile</code> | Retrieve the authenticated user's profile |
+| <code>PUT</code> | <code>/auth/profile</code> | Update name or masked ID |
+| <code>PUT</code> | <code>/auth/profile/face</code> | Re-enrol face with 3 new images |
+| <code>DELETE</code> | <code>/auth/profile</code> | Delete the authenticated user's own account |
+
+<h2>Admin Endpoints (<code>X-Admin-Secret</code> Header Required)</h2>
+
+| Method | Path | Description |
+|---|---|---|
+| <code>GET</code> | <code>/auth/admin/users</code> | List all registered users |
+| <code>PUT</code> | <code>/auth/admin/users/{phone}</code> | Update any user by phone number |
+| <code>DELETE</code> | <code>/auth/admin/users/{phone}</code> | Delete any user by phone number |
+
+---
+
+<h2 id="changelog">Full Changelog</h2>
+
+<h2>v3.0.0 — Current</h2>
+
+<b>Backend</b>
+
+<ul>
+  <li>Migrated configuration to <b>Pydantic v2 <code>BaseSettings</code></b> with field validators and computed properties</li>
+  <li>Added <b>MongoDB automatic indexing</b> on startup (unique phone index, created_at index)</li>
+  <li>Implemented <b>refresh token system</b> with separate secret key, type claims, and <code>/auth/refresh</code> endpoint</li>
+  <li>All DeepFace calls are now <b>async</b> via thread-pool executor; multiple images processed concurrently</li>
+  <li>Added <b>image size guard</b> (configurable via <code>MAX_IMAGE_SIZE_MB</code>)</li>
+  <li>Implemented <b>Redis-backed rate limiting</b> via slowapi with automatic in-memory fallback</li>
+  <li>Extracted limiter to <code>core/limiter.py</code> to resolve circular imports</li>
+  <li>Added <b>DeepFace model warm-up</b> in lifespan startup to eliminate first-request lag</li>
+  <li>Replaced all <code>print()</code> calls with <b>structured named loggers</b></li>
+  <li>Added <b>security headers middleware</b> (HSTS, X-Frame-Options, CSP, XCTO, Referrer-Policy, Permissions-Policy, Server header removal)</li>
+  <li>Removed hardcoded <code>SECRET_KEY</code> fallback; startup fails if absent or too short</li>
+  <li>Admin endpoints secured with <code>X-Admin-Secret</code> header dependency</li>
+  <li>Tightened CORS to specific methods and headers including <code>X-Admin-Secret</code></li>
+</ul>
+
+<b>Frontend</b>
+
+<ul>
+  <li>Introduced <b><code>AuthContext</code></b> for global authentication state</li>
+  <li>Implemented <b>silent token refresh</b> in the 401 interceptor with request queuing</li>
+  <li>Added <code>storeTokens()</code> and <code>clearTokens()</code> helpers to manage both tokens</li>
+  <li>Fixed <b>memory leak</b> in <code>BlinkDetector</code> (camera and FaceMesh cleanup on unmount)</li>
+  <li>Fixed <b>stale closure</b> in blink detection (refs instead of state)</li>
+  <li>Fixed <b>race condition</b> in image capture (ref-based image list)</li>
+  <li>Fixed <b>double-submission</b> in login (<code>verifying</code> ref guard)</li>
+  <li>Replaced all <code>window.confirm()</code> / <code>window.alert()</code> with <code>ConfirmDialog</code> component</li>
+  <li>Removed invalid <code>&lt;style jsx&gt;</code> tag from <code>AdminDashboard</code></li>
+  <li>Added admin secret authentication gate to <code>AdminDashboard</code></li>
+  <li>Complete dark theme with glassmorphism, Inter font, CSS custom properties, and micro-animations</li>
+</ul>
+
+---
+
+<p>
+<b>Licence:</b> MIT &nbsp;|&nbsp;
+<b>Python:</b> 3.10+ &nbsp;|&nbsp;
+<b>Node:</b> 18+
+</p>

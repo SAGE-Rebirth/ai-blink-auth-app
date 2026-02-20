@@ -1,178 +1,249 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { getProfile, updateProfile, deleteAccount, updateFace } from '../services/api';
+import React, { useEffect, useState } from 'react';
+import { getProfile, updateProfile, deleteAccount, updateFace, getErrorMessage } from '../services/api';
+import { useAuth } from '../App';
 import BlinkDetector from './BlinkDetector';
+import ConfirmDialog from './ConfirmDialog';
 
-const Profile = ({ onLogout }) => {
+const TOTAL_IMAGES = 3;
+
+const Profile = () => {
+    const { handleLogout } = useAuth();
+
     const [user, setUser] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
+    const [pageLoading, setPageLoading] = useState(true);
+    const [alert, setAlert] = useState(null); // { type, text }
+    const [confirm, setConfirm] = useState(null); // { title, message, onConfirm }
+
+    // Edit mode
     const [isEditing, setIsEditing] = useState(false);
-    const [isUpdatingFace, setIsUpdatingFace] = useState(false);
     const [editForm, setEditForm] = useState({ name: '', masked_id: '' });
-    const [updateMessage, setUpdateMessage] = useState('');
+    const [editLoading, setEditLoading] = useState(false);
 
-    useEffect(() => {
-        fetchProfile();
-    }, [onLogout]);
+    // Face update mode
+    const [isUpdatingFace, setIsUpdatingFace] = useState(false);
+    const [faceCaptureCount, setFaceCaptureCount] = useState(0);
+    const [faceImages, setFaceImages] = useState([]);
+    const [faceLoading, setFaceLoading] = useState(false);
 
+    const setError = (text) => setAlert({ type: 'error', text });
+    const setSuccess = (text) => setAlert({ type: 'success', text });
+
+    // ── Fetch Profile ─────────────────────────────────────────────
     const fetchProfile = async () => {
         try {
             const data = await getProfile();
             setUser(data);
             setEditForm({ name: data.name, masked_id: data.masked_id });
         } catch (err) {
-            setError('Failed to load profile. Please login again.');
-            console.error(err);
-            if (err.detail === "Could not validate credentials") {
-                onLogout();
-            }
+            setError(getErrorMessage(err));
+            // 401 will be handled by the global interceptor → auth:logout
         } finally {
-            setLoading(false);
+            setPageLoading(false);
         }
     };
 
+    // Remove handleLogout from deps — it won't change but including it causes re-fetch on parent re-renders
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { fetchProfile(); }, []);
+
+    // ── Update Profile ────────────────────────────────────────────
     const handleUpdate = async (e) => {
         e.preventDefault();
-        setUpdateMessage('');
+        setAlert(null);
+        setEditLoading(true);
         try {
             await updateProfile(editForm);
-            setUpdateMessage('Profile updated successfully!');
+            setSuccess('Profile updated successfully.');
             setIsEditing(false);
-            fetchProfile(); // Refresh data
+            await fetchProfile();
         } catch (err) {
-            setUpdateMessage(`Error: ${err.detail || 'Failed to update'}`);
+            setError(getErrorMessage(err));
+        } finally {
+            setEditLoading(false);
         }
     };
 
-    const [capturedImages, setCapturedImages] = useState([]);
-
-    const handleFaceUpdate = useCallback(async (imageSrc) => {
-        setCapturedImages(prev => {
-            const newImages = [...prev, imageSrc];
-            if (newImages.length === 3) {
-                // Determine if we should process now
-                submitFaceUpdate(newImages);
+    // ── Face Capture for re-enroll ────────────────────────────────
+    const handleFaceCapture = (imageSrc) => {
+        setFaceImages((prev) => {
+            if (prev.length >= TOTAL_IMAGES) return prev;
+            const next = [...prev, imageSrc];
+            if (next.length === TOTAL_IMAGES) {
+                submitFaceUpdate(next);
             }
-            return newImages;
+            return next;
         });
-    }, []);
+        setFaceCaptureCount((c) => Math.min(c + 1, TOTAL_IMAGES));
+    };
 
     const submitFaceUpdate = async (images) => {
-        setLoading(true);
-        setUpdateMessage('Processing face update...');
+        setFaceLoading(true);
+        setAlert(null);
         try {
             await updateFace(images);
-            setUpdateMessage('Face ID updated successfully!');
+            setSuccess('Face ID updated successfully.');
             setIsUpdatingFace(false);
-            setCapturedImages([]);
-            fetchProfile();
+            setFaceImages([]);
+            setFaceCaptureCount(0);
         } catch (err) {
-            setUpdateMessage(`Error: ${err.detail || 'Failed to update face'}`);
-            setCapturedImages([]); // Reset on error
+            setError(getErrorMessage(err));
+            setFaceImages([]);
+            setFaceCaptureCount(0);
         } finally {
-            setLoading(false);
+            setFaceLoading(false);
         }
     };
 
     const startFaceUpdate = () => {
-        setCapturedImages([]);
-        setUpdateMessage('');
+        setFaceImages([]);
+        setFaceCaptureCount(0);
         setIsUpdatingFace(true);
+        setAlert(null);
     };
 
-    const handleDelete = async () => {
-        if (window.confirm('Are you sure you want to delete your account? This action cannot be undone.')) {
-            try {
-                await deleteAccount();
-                onLogout();
-            } catch (err) {
-                setUpdateMessage(`Error: ${err.detail || 'Failed to delete account'}`);
-            }
-        }
+    // ── Delete Account ────────────────────────────────────────────
+    const requestDelete = () => {
+        setConfirm({
+            title: 'Delete Account',
+            message: 'This will permanently delete your account and face data. This action cannot be undone.',
+            danger: true,
+            confirmLabel: 'Yes, Delete',
+            onConfirm: async () => {
+                setConfirm(null);
+                try {
+                    await deleteAccount();
+                    handleLogout();
+                } catch (err) {
+                    setError(getErrorMessage(err));
+                }
+            },
+        });
     };
 
-    if (loading && !isUpdatingFace) return <div className="processing-state"><div className="spinner"></div></div>;
+    // ── Render ────────────────────────────────────────────────────
+    if (pageLoading) {
+        return (
+            <div className="card">
+                <div className="spinner-overlay">
+                    <div className="spinner" />
+                    <span>Loading profile…</span>
+                </div>
+            </div>
+        );
+    }
 
-    if (error) return (
-        <div className="login-container">
-            <div className="message error">{error}</div>
-            <button onClick={onLogout} className="btn-secondary">Back to Login</button>
-        </div>
-    );
+    const formattedDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A';
 
     return (
-        <div className="login-container">
-            <div className="success-card">
-                <h2>User Profile</h2>
+        <div className="card">
+            {confirm && (
+                <ConfirmDialog
+                    title={confirm.title}
+                    message={confirm.message}
+                    danger={confirm.danger}
+                    confirmLabel={confirm.confirmLabel}
+                    onConfirm={confirm.onConfirm}
+                    onCancel={() => setConfirm(null)}
+                />
+            )}
 
-                {updateMessage && <div className={`message ${updateMessage.includes('Error') ? 'error' : 'success'}`}>{updateMessage}</div>}
-
-                {isUpdatingFace ? (
-                    <div className="face-update-section" style={{ marginBottom: '20px' }}>
-                        <h3>Update Face ID</h3>
-                        <div className="webcam-wrapper">
-                            <BlinkDetector onBlinkDetected={handleFaceUpdate} />
-                        </div>
-                        <p className="instruction-text">
-                            {capturedImages.length === 0 && "Blink to capture image 1/3"}
-                            {capturedImages.length === 1 && "Great! Blink again for image 2/3"}
-                            {capturedImages.length === 2 && "One last blink for image 3/3"}
-                            {capturedImages.length === 3 && "Processing..."}
-                        </p>
-                        <div className="progress-bar">
-                            <div className="progress-fill" style={{ width: `${(capturedImages.length / 3) * 100}%` }}></div>
-                        </div>
-                        <button onClick={() => { setIsUpdatingFace(false); setCapturedImages([]); }} className="btn-secondary" style={{ marginTop: '10px' }}>Cancel</button>
-                    </div>
-                ) : !isEditing ? (
-                    <>
-                        {/* ... details ... */}
-                        <div className="profile-details" style={{ textAlign: 'left', margin: '2rem 0' }}>
-                            <p><strong>Name:</strong> {user?.name}</p>
-                            <p><strong>Phone:</strong> {user?.phone}</p>
-                            <p><strong>Masked ID:</strong> {user?.masked_id}</p>
-                            <p><strong>Registered:</strong> {user?.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A'}</p>
-                            {user?.updated_at && <p><strong>Last Updated:</strong> {new Date(user.updated_at).toLocaleDateString()}</p>}
-                        </div>
-
-                        <div className="action-buttons-vertical" style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '1rem' }}>
-                            <div style={{ display: 'flex', gap: '10px' }}>
-                                <button onClick={() => setIsEditing(true)} className="btn-primary" style={{ flex: 1 }}>Edit Details</button>
-                                <button onClick={startFaceUpdate} className="btn-primary" style={{ flex: 1, backgroundColor: '#4CAF50' }}>Update Face</button>
-                            </div>
-                            <button onClick={handleDelete} className="btn-secondary" style={{ borderColor: '#f44336', color: '#f44336' }}>Delete Account</button>
-                        </div>
-                    </>
-                ) : (
-                    <form onSubmit={handleUpdate} className="profile-details" style={{ textAlign: 'left', margin: '2rem 0' }}>
-                        <div className="form-group">
-                            <label>Name</label>
-                            <input
-                                type="text"
-                                value={editForm.name}
-                                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                required
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>Masked ID</label>
-                            <input
-                                type="text"
-                                value={editForm.masked_id}
-                                onChange={(e) => setEditForm({ ...editForm, masked_id: e.target.value })}
-                                required
-                            />
-                        </div>
-                        <div className="action-buttons" style={{ display: 'flex', gap: '10px' }}>
-                            <button type="submit" className="btn-primary" style={{ flex: 1 }}>Save</button>
-                            <button type="button" onClick={() => setIsEditing(false)} className="btn-secondary" style={{ flex: 1 }}>Cancel</button>
-                        </div>
-                    </form>
-                )}
-
-                <div className="token-status">✓ Authenticated Session</div>
-                <button onClick={onLogout} className="btn-secondary" style={{ width: '100%' }}>Logout</button>
+            <div className="card-header">
+                <div className="card-icon">🪪</div>
+                <h1 className="card-title">My Profile</h1>
+                <div className="session-badge">✓ Authenticated Session</div>
             </div>
+
+            {alert && (
+                <div className={`alert alert-${alert.type}`}>
+                    <span>{alert.type === 'success' ? '✓' : '✕'}</span>
+                    <span>{alert.text}</span>
+                </div>
+            )}
+
+            {/* ── Face Update Section ── */}
+            {isUpdatingFace ? (
+                <div>
+                    <h3 style={{ marginBottom: '0.75rem', fontWeight: 600 }}>Update Face ID</h3>
+                    <div className="capture-dots">
+                        {Array.from({ length: TOTAL_IMAGES }).map((_, i) => (
+                            <div key={i} className={`capture-dot ${i < faceCaptureCount ? 'capture-dot--filled' : ''}`} />
+                        ))}
+                    </div>
+                    {faceLoading ? (
+                        <div className="spinner-overlay"><div className="spinner" /><span>Processing…</span></div>
+                    ) : (
+                        <BlinkDetector onBlinkDetected={handleFaceCapture} disabled={faceCaptureCount >= TOTAL_IMAGES} />
+                    )}
+                    <p className="instruction">
+                        {faceCaptureCount === 0 && 'Blink to capture image 1/3'}
+                        {faceCaptureCount === 1 && 'Great! Blink for image 2/3'}
+                        {faceCaptureCount === 2 && 'Last one — blink for image 3/3'}
+                        {faceCaptureCount >= 3 && 'Processing…'}
+                    </p>
+                    <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${(faceCaptureCount / TOTAL_IMAGES) * 100}%` }} />
+                    </div>
+                    {!faceLoading && (
+                        <button className="btn btn-secondary" style={{ marginTop: '0.75rem' }} onClick={() => { setIsUpdatingFace(false); setFaceImages([]); setFaceCaptureCount(0); }}>
+                            Cancel
+                        </button>
+                    )}
+                </div>
+            ) : isEditing ? (
+                /* ── Edit Form ── */
+                <form onSubmit={handleUpdate}>
+                    <div className="form-group">
+                        <label className="form-label">Full Name</label>
+                        <input className="form-input" type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required />
+                    </div>
+                    <div className="form-group">
+                        <label className="form-label">Masked ID</label>
+                        <input className="form-input" type="text" value={editForm.masked_id} onChange={(e) => setEditForm({ ...editForm, masked_id: e.target.value })} required />
+                    </div>
+                    <div className="btn-group">
+                        <button type="submit" className="btn btn-primary" disabled={editLoading}>
+                            {editLoading ? 'Saving…' : 'Save Changes'}
+                        </button>
+                        <button type="button" className="btn btn-secondary" onClick={() => setIsEditing(false)}>Cancel</button>
+                    </div>
+                </form>
+            ) : (
+                /* ── Profile View ── */
+                <>
+                    <div className="profile-grid">
+                        <div className="profile-item">
+                            <span className="profile-item__label">Full Name</span>
+                            <span className="profile-item__value">{user?.name}</span>
+                        </div>
+                        <div className="profile-item">
+                            <span className="profile-item__label">Phone Number</span>
+                            <span className="profile-item__value">{user?.phone}</span>
+                        </div>
+                        <div className="profile-item">
+                            <span className="profile-item__label">Masked ID</span>
+                            <span className="profile-item__value" style={{ fontFamily: 'monospace' }}>{user?.masked_id}</span>
+                        </div>
+                        <div className="profile-item">
+                            <span className="profile-item__label">Registered On</span>
+                            <span className="profile-item__value">{formattedDate(user?.created_at)}</span>
+                        </div>
+                        {user?.updated_at && user.updated_at !== user.created_at && (
+                            <div className="profile-item">
+                                <span className="profile-item__label">Last Updated</span>
+                                <span className="profile-item__value">{formattedDate(user.updated_at)}</span>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="btn-group" style={{ marginBottom: '0.75rem' }}>
+                        <button className="btn btn-primary" onClick={() => setIsEditing(true)}>Edit Details</button>
+                        <button className="btn btn-success" onClick={startFaceUpdate}>Update Face</button>
+                    </div>
+                    <button className="btn btn-danger" onClick={requestDelete}>Delete Account</button>
+                    <hr className="divider" />
+                    <button className="btn btn-secondary" onClick={handleLogout}>Logout</button>
+                </>
+            )}
         </div>
     );
 };
