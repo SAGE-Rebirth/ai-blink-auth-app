@@ -1,136 +1,217 @@
-import React, { useEffect, useState } from 'react';
-import { getAllUsers, adminDeleteUser, adminUpdateUser } from '../services/api';
+import React, { useEffect, useState, useCallback } from 'react';
+import { getAllUsers, adminDeleteUser, adminUpdateUser, getErrorMessage } from '../services/api';
+import ConfirmDialog from './ConfirmDialog';
 
-const AdminDashboard = ({ onBack }) => {
+const AdminDashboard = () => {
+    const [adminSecret, setAdminSecret] = useState('');
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [secretInput, setSecretInput] = useState('');
+    const [secretError, setSecretError] = useState('');
+
     const [users, setUsers] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const [editMode, setEditMode] = useState(null); // phone number of user being edited
+    const [loading, setLoading] = useState(false);
+    const [alert, setAlert] = useState(null); // { type, text }
+    const [editMode, setEditMode] = useState(null); // phone of user being edited
     const [editForm, setEditForm] = useState({ name: '', masked_id: '' });
+    const [confirm, setConfirm] = useState(null);
 
-    useEffect(() => {
-        fetchUsers();
-    }, []);
+    const setError = (text) => setAlert({ type: 'error', text });
+    const setSuccess = (text) => setAlert({ type: 'success', text });
 
-    const fetchUsers = async () => {
+    // ── Authenticate with admin secret ────────────────────────────
+    const handleAdminLogin = async (e) => {
+        e.preventDefault();
+        setSecretError('');
+        if (!secretInput.trim()) { setSecretError('Admin secret is required.'); return; }
+        // Try fetching users to validate the secret
+        setLoading(true);
         try {
-            const data = await getAllUsers();
+            const data = await getAllUsers(secretInput.trim());
+            setAdminSecret(secretInput.trim());
             setUsers(data);
+            setIsAuthenticated(true);
         } catch (err) {
-            setError('Failed to fetch users');
-            console.error(err);
+            setSecretError(getErrorMessage(err));
         } finally {
             setLoading(false);
         }
     };
 
-    const handleDelete = async (phone) => {
-        if (window.confirm(`Are you sure you want to delete user with phone ${phone}?`)) {
-            try {
-                await adminDeleteUser(phone);
-                setUsers(users.filter(u => u.phone !== phone));
-                alert('User deleted successfully');
-            } catch (err) {
-                alert(`Failed to delete: ${err.detail || 'Unknown error'}`);
-            }
+    // ── Fetch Users ───────────────────────────────────────────────
+    const fetchUsers = useCallback(async () => {
+        setLoading(true);
+        try {
+            const data = await getAllUsers(adminSecret);
+            setUsers(data);
+        } catch (err) {
+            setError(getErrorMessage(err));
+        } finally {
+            setLoading(false);
         }
+    }, [adminSecret]);
+
+    useEffect(() => {
+        if (isAuthenticated) fetchUsers();
+    }, [isAuthenticated, fetchUsers]);
+
+    // ── Delete ────────────────────────────────────────────────────
+    const requestDelete = (phone) => {
+        setConfirm({
+            title: 'Delete User',
+            message: `Delete the account for ${phone}? This cannot be undone.`,
+            danger: true,
+            confirmLabel: 'Delete',
+            onConfirm: async () => {
+                setConfirm(null);
+                try {
+                    await adminDeleteUser(phone, adminSecret);
+                    setUsers((prev) => prev.filter((u) => u.phone !== phone));
+                    setSuccess(`User ${phone} deleted successfully.`);
+                } catch (err) {
+                    setError(getErrorMessage(err));
+                }
+            },
+        });
     };
 
+    // ── Edit ──────────────────────────────────────────────────────
     const startEdit = (user) => {
         setEditMode(user.phone);
         setEditForm({ name: user.name, masked_id: user.masked_id });
     };
 
-    const cancelEdit = () => {
-        setEditMode(null);
-        setEditForm({ name: '', masked_id: '' });
-    };
+    const cancelEdit = () => { setEditMode(null); };
 
     const saveEdit = async (phone) => {
         try {
-            await adminUpdateUser(phone, editForm);
-            setUsers(users.map(u => u.phone === phone ? { ...u, ...editForm } : u));
+            await adminUpdateUser(phone, editForm, adminSecret);
+            setUsers((prev) => prev.map((u) => u.phone === phone ? { ...u, ...editForm } : u));
             setEditMode(null);
+            setSuccess('User updated successfully.');
         } catch (err) {
-            alert(`Failed to update: ${err.detail || 'Unknown error'}`);
+            setError(getErrorMessage(err));
         }
     };
 
-    if (loading) return <div className="processing-state"><div className="spinner"></div></div>;
+    const formattedDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
 
+    // ── Admin Auth Gate ───────────────────────────────────────────
+    if (!isAuthenticated) {
+        return (
+            <div className="card" style={{ maxWidth: 400 }}>
+                <div className="card-header">
+                    <div className="card-icon">🛡</div>
+                    <h1 className="card-title">Admin Access</h1>
+                    <p className="card-subtitle">Enter the admin secret to continue</p>
+                </div>
+                <form onSubmit={handleAdminLogin}>
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="admin-secret">Admin Secret</label>
+                        <input
+                            id="admin-secret"
+                            className="form-input"
+                            type="password"
+                            value={secretInput}
+                            onChange={(e) => setSecretInput(e.target.value)}
+                            placeholder="Enter admin secret"
+                            autoFocus
+                        />
+                    </div>
+                    {secretError && <div className="alert alert-error"><span>✕</span><span>{secretError}</span></div>}
+                    <button type="submit" className="btn btn-primary" disabled={loading}>
+                        {loading ? 'Verifying…' : 'Access Dashboard'}
+                    </button>
+                </form>
+            </div>
+        );
+    }
+
+    // ── Admin Dashboard ───────────────────────────────────────────
     return (
-        <div className="login-container" style={{ maxWidth: '900px' }}>
-            <h2>Admin Dashboard</h2>
-            {error && <div className="message error">{error}</div>}
+        <div className="card card--wide">
+            {confirm && (
+                <ConfirmDialog
+                    title={confirm.title}
+                    message={confirm.message}
+                    danger={confirm.danger}
+                    confirmLabel={confirm.confirmLabel}
+                    onConfirm={confirm.onConfirm}
+                    onCancel={() => setConfirm(null)}
+                />
+            )}
 
-            <div className="users-table-container" style={{ overflowX: 'auto', margin: '20px 0' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                    <thead>
-                        <tr style={{ borderBottom: '2px solid #333' }}>
-                            <th style={{ padding: '10px' }}>Name</th>
-                            <th style={{ padding: '10px' }}>Phone</th>
-                            <th style={{ padding: '10px' }}>Masked ID</th>
-                            <th style={{ padding: '10px' }}>Registered</th>
-                            <th style={{ padding: '10px' }}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {users.map((user) => (
-                            <tr key={user.phone} style={{ borderBottom: '1px solid #eee' }}>
-                                <td style={{ padding: '10px' }}>
-                                    {editMode === user.phone ? (
-                                        <input
-                                            value={editForm.name}
-                                            onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                            style={{ padding: '5px' }}
-                                        />
-                                    ) : user.name}
-                                </td>
-                                <td style={{ padding: '10px' }}>{user.phone}</td>
-                                <td style={{ padding: '10px' }}>
-                                    {editMode === user.phone ? (
-                                        <input
-                                            value={editForm.masked_id}
-                                            onChange={(e) => setEditForm({ ...editForm, masked_id: e.target.value })}
-                                            style={{ padding: '5px' }}
-                                        />
-                                    ) : user.masked_id}
-                                </td>
-                                <td style={{ padding: '10px' }}>{user.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A'}</td>
-                                <td style={{ padding: '10px' }}>
-                                    {editMode === user.phone ? (
-                                        <div style={{ display: 'flex', gap: '5px' }}>
-                                            <button onClick={() => saveEdit(user.phone)} className="btn-small safety-green">Save</button>
-                                            <button onClick={cancelEdit} className="btn-small">Cancel</button>
-                                        </div>
-                                    ) : (
-                                        <div style={{ display: 'flex', gap: '5px' }}>
-                                            <button onClick={() => startEdit(user)} className="btn-small">Edit</button>
-                                            <button onClick={() => handleDelete(user.phone)} className="btn-small danger">Delete</button>
-                                        </div>
-                                    )}
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+            <div className="card-header">
+                <div className="card-icon">🛡</div>
+                <h1 className="card-title">Admin Dashboard</h1>
+                <p className="card-subtitle">{users.length} registered user{users.length !== 1 ? 's' : ''}</p>
             </div>
 
-            <button onClick={onBack} className="btn-secondary">Back to App</button>
-            <style jsx>{`
-                .btn-small {
-                    padding: 5px 10px;
-                    font-size: 0.8rem;
-                    cursor: pointer;
-                    background: #444;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                }
-                .btn-small.danger { background: #d32f2f; }
-                .btn-small.safety-green { background: #4caf50; }
-                .btn-small:hover { opacity: 0.9; }
-            `}</style>
+            {alert && (
+                <div className={`alert alert-${alert.type}`}>
+                    <span>{alert.type === 'success' ? '✓' : '✕'}</span>
+                    <span>{alert.text}</span>
+                </div>
+            )}
+
+            {loading ? (
+                <div className="spinner-overlay"><div className="spinner" /><span>Loading users…</span></div>
+            ) : users.length === 0 ? (
+                <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem 0' }}>No registered users found.</p>
+            ) : (
+                <div className="admin-table-wrapper">
+                    <table className="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Phone</th>
+                                <th>Masked ID</th>
+                                <th>Registered</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {users.map((user) => (
+                                <tr key={user.phone}>
+                                    <td>
+                                        {editMode === user.phone
+                                            ? <input className="table-input" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+                                            : user.name}
+                                    </td>
+                                    <td>{user.phone}</td>
+                                    <td>
+                                        {editMode === user.phone
+                                            ? <input className="table-input" value={editForm.masked_id} onChange={(e) => setEditForm({ ...editForm, masked_id: e.target.value })} />
+                                            : <span style={{ fontFamily: 'monospace' }}>{user.masked_id}</span>}
+                                    </td>
+                                    <td>{formattedDate(user.created_at)}</td>
+                                    <td>
+                                        <div className="admin-actions">
+                                            {editMode === user.phone ? (
+                                                <>
+                                                    <button className="btn btn-success btn-sm" onClick={() => saveEdit(user.phone)}>Save</button>
+                                                    <button className="btn btn-secondary btn-sm" onClick={cancelEdit}>Cancel</button>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <button className="btn btn-secondary btn-sm" onClick={() => startEdit(user)}>Edit</button>
+                                                    <button className="btn btn-danger btn-sm" onClick={() => requestDelete(user.phone)}>Delete</button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+            <hr className="divider" />
+            <div className="btn-group">
+                <button className="btn btn-secondary" onClick={fetchUsers} disabled={loading}>Refresh</button>
+                <button className="btn btn-secondary" onClick={() => { setIsAuthenticated(false); setUsers([]); setAdminSecret(''); setSecretInput(''); }}>
+                    Logout Admin
+                </button>
+            </div>
         </div>
     );
 };

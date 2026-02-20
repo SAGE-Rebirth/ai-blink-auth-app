@@ -1,8 +1,14 @@
 fastapi
-uvicorn
+uvicorn[standard]
 deepface
 pymongo
 python-multipart
 numpy
 opencv-python-headless
-pydantic
+pydantic[email]
+pydantic-settings
+python-jose[cryptography]
+python-dotenv
+passlib[bcrypt]
+slowapi
+redis

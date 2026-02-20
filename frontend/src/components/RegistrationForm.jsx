@@ -1,150 +1,181 @@
 import React, { useState, useRef, useCallback } from 'react';
-import Webcam from 'react-webcam';
-import { registerUser } from '../services/api';
 import BlinkDetector from './BlinkDetector';
+import { registerUser, getErrorMessage } from '../services/api';
+import { useNavigate } from 'react-router-dom';
 
-const RegistrationForm = ({ onRegisterSuccess }) => {
+const TOTAL_IMAGES = 3;
+
+const CAPTURE_HINTS = [
+    'Look straight at the camera',
+    'Turn your head slightly to the left',
+    'Turn your head slightly to the right',
+];
+
+const RegistrationForm = () => {
+    const navigate = useNavigate();
     const [step, setStep] = useState(1); // 1: Details, 2: Face Capture
-    const [formData, setFormData] = useState({
-        name: '',
-        phone: '',
-        masked_id: '',
-    });
-    const [images, setImages] = useState([]);
+    const [formData, setFormData] = useState({ name: '', phone: '', masked_id: '' });
     const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState('');
+    const [alert, setAlert] = useState(null); // { type, text }
+
+    // ── Use a REF for image list to avoid stale-closure race condition ──
+    const capturedImagesRef = useRef([]);
+    const [captureCount, setCaptureCount] = useState(0); // only for display
+    const [captureComplete, setCaptureComplete] = useState(false);
+    const [previewImages, setPreviewImages] = useState([]);
+
+    const setError = (text) => setAlert({ type: 'error', text });
 
     const handleInputChange = (e) => {
         const { name, value } = e.target;
         setFormData((prev) => ({ ...prev, [name]: value }));
     };
 
+    // ── Step 1 Validation ─────────────────────────────────────────
     const handleNext = (e) => {
         e.preventDefault();
-        if (formData.name && formData.phone && formData.masked_id) {
-            setStep(2);
-        } else {
-            setMessage('Please fill in all fields.');
-        }
+        setAlert(null);
+        const { name, phone, masked_id } = formData;
+        if (name.trim().length < 2) { setError('Name must be at least 2 characters.'); return; }
+        if (!/^\+?\d{7,15}$/.test(phone.trim())) { setError('Enter a valid phone number (7–15 digits).'); return; }
+        if (!masked_id.trim()) { setError('Masked ID is required.'); return; }
+        setStep(2);
     };
 
+    // ── Step 2: Blink captures image ──────────────────────────────
     const handleBlinkDetected = useCallback((imageSrc) => {
-        if (images.length < 3) {
-            console.log(`[Registration] Captured image ${images.length + 1}/3`);
-            setImages((prev) => {
-                if (prev.length < 3) {
-                    return [...prev, imageSrc];
-                }
-                return prev;
-            });
+        // Use ref to read current length — avoids stale closure
+        const current = capturedImagesRef.current;
+        if (current.length >= TOTAL_IMAGES) return;
+
+        capturedImagesRef.current = [...current, imageSrc];
+        const newCount = capturedImagesRef.current.length;
+
+        setCaptureCount(newCount);
+        setPreviewImages((prev) => [...prev, imageSrc]);
+
+        if (newCount >= TOTAL_IMAGES) {
+            setCaptureComplete(true);
         }
-    }, [images]);
+    }, []);
 
     const retake = () => {
-        setImages([]);
+        capturedImagesRef.current = [];
+        setCaptureCount(0);
+        setPreviewImages([]);
+        setCaptureComplete(false);
+        setAlert(null);
     };
 
+    // ── Submit Registration ───────────────────────────────────────
     const handleSubmit = async () => {
+        setAlert(null);
         setLoading(true);
-        setMessage('Registering... This may take a moment to process face embeddings.');
         try {
             const payload = {
                 ...formData,
-                images: images
+                name: formData.name.trim(),
+                phone: formData.phone.trim(),
+                masked_id: formData.masked_id.trim(),
+                images: capturedImagesRef.current,
             };
-            const response = await registerUser(payload);
-            setMessage(`Success: ${response.message}`);
-            setTimeout(() => {
-                if (onRegisterSuccess) {
-                    onRegisterSuccess();
-                }
-            }, 2000);
-        } catch (error) {
-            setMessage(`Error: ${error.message}`);
+            await registerUser(payload);
+            setAlert({ type: 'success', text: 'Registration successful! Redirecting to login…' });
+            setTimeout(() => navigate('/'), 1800);
+        } catch (err) {
+            setError(getErrorMessage(err));
         } finally {
             setLoading(false);
         }
     };
 
+    // ── Render ────────────────────────────────────────────────────
     return (
-        <div className="registration-container">
-            <h2>Identity Registration</h2>
-            {message && <div className={`message ${message.startsWith('Success') ? 'success' : 'error'}`}>{message}</div>}
+        <div className="card">
+            <div className="card-header">
+                <div className="card-icon">✦</div>
+                <h1 className="card-title">Create Account</h1>
+                <p className="card-subtitle">
+                    {step === 1 ? 'Enter your details to get started' : `Capture your face — ${captureCount} / ${TOTAL_IMAGES}`}
+                </p>
+            </div>
 
+            {alert && (
+                <div className={`alert alert-${alert.type}`}>
+                    <span>{alert.type === 'success' ? '✓' : '✕'}</span>
+                    <span>{alert.text}</span>
+                </div>
+            )}
+
+            {/* Step 1 */}
             {step === 1 && (
-                <form onSubmit={handleNext} className="registration-form">
+                <form onSubmit={handleNext}>
                     <div className="form-group">
-                        <label>Full Name</label>
-                        <input
-                            type="text"
-                            name="name"
-                            value={formData.name}
-                            onChange={handleInputChange}
-                            required
-                            placeholder="Ex: Abhinav Pavithran"
-                        />
+                        <label className="form-label" htmlFor="name">Full Name</label>
+                        <input id="name" className="form-input" type="text" name="name" value={formData.name} onChange={handleInputChange} placeholder="e.g. Priya Sharma" required autoFocus />
                     </div>
                     <div className="form-group">
-                        <label>Phone Number</label>
-                        <input
-                            type="tel"
-                            name="phone"
-                            value={formData.phone}
-                            onChange={handleInputChange}
-                            required
-                            placeholder="Ex: 9876543210"
-                        />
+                        <label className="form-label" htmlFor="phone">Phone Number</label>
+                        <input id="phone" className="form-input" type="tel" name="phone" value={formData.phone} onChange={handleInputChange} placeholder="e.g. 9876543210" required />
                     </div>
                     <div className="form-group">
-                        <label>Masked ID (Last 4 digits)</label>
-                        <input
-                            type="text"
-                            name="masked_id"
-                            value={formData.masked_id}
-                            onChange={handleInputChange}
-                            required
-                            placeholder="Ex: xxxx-xxxx-4321"
-                        />
+                        <label className="form-label" htmlFor="masked_id">Masked ID</label>
+                        <input id="masked_id" className="form-input" type="text" name="masked_id" value={formData.masked_id} onChange={handleInputChange} placeholder="e.g. XXXX-XXXX-4321" required />
                     </div>
-                    <button type="submit" className="btn-primary">Next: Face Capture</button>
+                    <button type="submit" className="btn btn-primary">Next: Capture Face →</button>
+                    <hr className="divider" />
+                    <p style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                        Already registered?{' '}
+                        <button type="button" className="link-btn" onClick={() => navigate('/')}>Login</button>
+                    </p>
                 </form>
             )}
 
+            {/* Step 2 — Face Capture */}
             {step === 2 && (
-                <div className="face-capture-section">
-                    <div className="webcam-wrapper">
-                        {images.length < 3 ? (
-                            <BlinkDetector onBlinkDetected={handleBlinkDetected} />
-                        ) : (
-                            <div className="capture-complete">
-                                <p>✓ 3 Images Captured</p>
-                            </div>
-                        )}
+                <div>
+                    {/* Capture dots */}
+                    <div className="capture-dots">
+                        {Array.from({ length: TOTAL_IMAGES }).map((_, i) => (
+                            <div key={i} className={`capture-dot ${i < captureCount ? 'capture-dot--filled' : ''}`} />
+                        ))}
                     </div>
 
-                    <div className="capture-controls">
-                        <p className="capture-count">Captured: {images.length} / 3</p>
-                        <p className="instruction-text" style={{ color: '#aaa', fontSize: '0.9rem', marginBottom: '1rem' }}>
-                            Blink naturally to capture photo (hold still)
-                        </p>
+                    {!captureComplete ? (
+                        <>
+                            <BlinkDetector onBlinkDetected={handleBlinkDetected} />
+                            <p className="instruction">{CAPTURE_HINTS[captureCount] || 'Hold still and blink'}</p>
+                        </>
+                    ) : (
+                        <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+                            <p style={{ fontSize: '2rem' }}>✓</p>
+                            <p style={{ color: 'var(--success)', fontWeight: 600, marginBottom: '0.5rem' }}>All 3 images captured!</p>
+                        </div>
+                    )}
 
-                        <div className="image-previews">
-                            {images.map((img, idx) => (
-                                <img key={idx} src={img} alt={`capture-${idx}`} className="preview-thumb" />
+                    {/* Preview thumbs */}
+                    {previewImages.length > 0 && (
+                        <div className="preview-thumbs">
+                            {previewImages.map((img, idx) => (
+                                <img key={idx} src={img} alt={`capture-${idx + 1}`} className="preview-thumb" />
                             ))}
                         </div>
+                    )}
 
-                        {images.length >= 3 && (
-                            <div className="action-buttons">
-                                <button onClick={retake} className="btn-secondary">Retake</button>
-                                <button onClick={handleSubmit} className="btn-primary" disabled={loading}>
-                                    {loading ? 'Registering...' : 'Complete Registration'}
-                                </button>
-                            </div>
-                        )}
+                    {captureComplete && (
+                        <div className="btn-group" style={{ marginTop: '1rem' }}>
+                            <button className="btn btn-secondary" onClick={retake} disabled={loading}>Retake</button>
+                            <button className="btn btn-primary" onClick={handleSubmit} disabled={loading}>
+                                {loading ? <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Registering…</> : 'Complete Registration'}
+                            </button>
+                        </div>
+                    )}
 
-                        <button onClick={() => setStep(1)} className="btn-text">Back to Details</button>
-                    </div>
+                    {!captureComplete && (
+                        <button className="btn-ghost" style={{ marginTop: '1rem', display: 'block', width: '100%', textAlign: 'center' }} onClick={() => { retake(); setStep(1); }}>
+                            ← Back to Details
+                        </button>
+                    )}
                 </div>
             )}
         </div>
