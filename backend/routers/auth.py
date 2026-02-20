@@ -14,7 +14,9 @@ Improvements applied in this version:
 """
 import asyncio
 import base64
+import concurrent.futures
 import logging
+import math
 import re
 from datetime import datetime
 from typing import List, Optional
@@ -41,9 +43,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # ---------------------------------------------------------------------------
-# Executor pool for DeepFace (runs blocking CPU work off the event loop)
+# Dedicated thread pool — avoids contention with the default OS executor.
+# 2 workers is enough: DeepFace is CPU-bound, more threads won't help on a
+# single CPU and will just cause context-switching overhead.
 # ---------------------------------------------------------------------------
-_executor = None  # Uses Python's default ThreadPoolExecutor
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+# max_workers=1: TensorFlow's global graph is NOT thread-safe.
+# Running two DeepFace calls simultaneously causes "Retval[0] already set".
+# A single worker serialises all calls while still keeping the event loop free.
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +114,12 @@ class UserFaceUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _decode_image(img_b64: str):
+def _decode_image(img_b64: str, max_side: int = 640):
     """
-    Decode a base64 image string (with or without data-URI prefix) to an OpenCV Mat.
-    Includes #3 Image Size Guard.
+    Decode a base64 image to an OpenCV Mat and resize to max_side px.
+    Smaller images = much faster DeepFace processing.
+    Includes image size guard.
     """
-    # ── #3 Image size guard ─────────────────────────────────────
     raw = img_b64.split(",", 1)[1] if "," in img_b64 else img_b64
     if len(raw) > settings.max_b64_chars:
         raise HTTPException(
@@ -123,6 +130,13 @@ def _decode_image(img_b64: str):
         img_bytes = base64.b64decode(raw)
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        # ── Resize to speed up DeepFace (keep aspect ratio) ──────
+        h, w = img.shape[:2]
+        if max(h, w) > max_side:
+            scale = max_side / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
         return img
     except Exception as e:
         logger.warning("Image decode failed: %s", e)
@@ -132,17 +146,22 @@ def _decode_image(img_b64: str):
 # ── #2 Async DeepFace helpers ────────────────────────────────────────────────
 
 async def _async_represent(img) -> list:
-    """Run DeepFace.represent() in a thread pool so the event loop stays free."""
+    """
+    Run DeepFace.represent() in a dedicated thread pool (single worker to keep
+    TensorFlow's global graph safe). Uses opencv detector — ~3-5x faster than
+    the default retinaface/mtcnn backends.
+    """
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
+    results = await loop.run_in_executor(
         _executor,
         lambda: DeepFace.represent(
             img_path=img,
             model_name=settings.DEEPFACE_MODEL,
+            detector_backend="opencv",
             enforce_detection=False,
         ),
     )
-    return result
+    return results
 
 
 async def _get_embeddings(images_b64: List[str]) -> List[list]:
@@ -176,13 +195,16 @@ async def _get_embeddings(images_b64: List[str]) -> List[list]:
 
 
 def _cosine_distance(a: list, b: list) -> float:
-    """1 - cosine_similarity between two embedding vectors."""
-    a_arr, b_arr = np.array(a), np.array(b)
-    dot = np.dot(a_arr, b_arr)
+    """1 - cosine_similarity. Returns 1.0 (worst) if vectors are zero or non-finite."""
+    a_arr, b_arr = np.array(a, dtype=np.float64), np.array(b, dtype=np.float64)
+    # Guard against NaN/Inf coming from DeepFace on bad frames
+    if not np.all(np.isfinite(a_arr)) or not np.all(np.isfinite(b_arr)):
+        return 1.0
     na, nb = np.linalg.norm(a_arr), np.linalg.norm(b_arr)
     if na == 0 or nb == 0:
         return 1.0
-    return float(1 - dot / (na * nb))
+    dist = float(1.0 - np.dot(a_arr, b_arr) / (na * nb))
+    return dist if math.isfinite(dist) else 1.0
 
 
 def _get_collection():
@@ -279,7 +301,10 @@ async def verify_face(request: Request, data: UserVerify):
         _cosine_distance(live_embedding, stored_emb)
         for stored_emb in user["embeddings"]
     )
-    confidence = round(float(1 - min_distance), 4)
+    # Clamp to valid range — guards against any residual NaN/Inf before JSON serialisation
+    if not math.isfinite(min_distance):
+        min_distance = 1.0
+    confidence = round(max(0.0, min(1.0, float(1.0 - min_distance))), 4)
     logger.info(
         "Verification [%s]: distance=%.4f threshold=%.2f result=%s",
         phone, min_distance, settings.FACE_DISTANCE_THRESHOLD,
