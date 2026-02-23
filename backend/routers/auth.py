@@ -1,16 +1,14 @@
 """
-auth.py — Authentication & admin router.
+auth.py — Authentication & admin router (PyTorch / facenet-pytorch edition).
 
-Improvements applied in this version:
-  #2  Async face processing — DeepFace runs in a thread-pool executor so the event
-      loop is never blocked during heavy CPU work.
-  #3  Image size guard — base64 strings are rejected before decoding if they exceed
-      MAX_IMAGE_SIZE_MB (configured in config.py).
-  #4  slowapi rate limiting on /auth/verify-face (5 / minute per IP, persisted in Redis).
-      Fallback: in-memory limiter is used if Redis is unavailable.
-  #5  Refresh token system — /auth/refresh returns a new access token from a valid
-      refresh token, so users stay logged in without re-scanning their face.
-  #8  Structured logging throughout (no print() calls).
+Key design decisions:
+  - Face recognition: facenet-pytorch (MTCNN detection + InceptionResnetV1 embeddings)
+    - Pure PyTorch, no TensorFlow dependency, ~3× faster on CPU
+  - Role system: first registered user → admin, all subsequent → user
+    - Admins can promote any user to admin via PUT /auth/admin/promote/{phone}
+  - Admin endpoints protected by JWT role check (require_admin dependency)
+  - Horizontal-flip augmentation: each registration image is also stored mirrored
+    → stores up to 6 embeddings from 3 images — improves side-face match rate
 """
 import asyncio
 import base64
@@ -23,7 +21,9 @@ from typing import List, Optional
 
 import cv2
 import numpy as np
-from deepface import DeepFace
+import torch
+from facenet_pytorch import MTCNN, InceptionResnetV1
+from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, validator
 
@@ -34,23 +34,37 @@ from core.security import (
     create_refresh_token,
     decode_refresh_token,
     get_current_user,
+    require_admin,
     verify_admin_secret,
 )
-from core.limiter import limiter  # shared limiter from core/limiter.py (avoids circular import)
+from core.limiter import limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # ---------------------------------------------------------------------------
-# Dedicated thread pool — avoids contention with the default OS executor.
-# 2 workers is enough: DeepFace is CPU-bound, more threads won't help on a
-# single CPU and will just cause context-switching overhead.
+# facenet-pytorch model initialisation (done once at import time)
+# CPU mode — works on any machine without a GPU.
 # ---------------------------------------------------------------------------
+_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger.info("Face recognition running on device: %s", _device)
+
+_mtcnn = MTCNN(
+    image_size=160,
+    margin=20,
+    min_face_size=40,
+    thresholds=[0.6, 0.7, 0.7],
+    factor=0.709,
+    post_process=True,
+    device=_device,
+    keep_all=False,
+)
+
+_resnet = InceptionResnetV1(pretrained="vggface2").eval().to(_device)
+
+# Single-worker executor — PyTorch models are not thread-safe under concurrent calls.
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-# max_workers=1: TensorFlow's global graph is NOT thread-safe.
-# Running two DeepFace calls simultaneously causes "Retval[0] already set".
-# A single worker serialises all calls while still keeping the event loop free.
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +129,7 @@ class UserFaceUpdate(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 def _decode_image(img_b64: str, max_side: int = 640):
-    """
-    Decode a base64 image to an OpenCV Mat and resize to max_side px.
-    Smaller images = much faster DeepFace processing.
-    Includes image size guard.
-    """
+    """Decode a base64 image to an OpenCV Mat and resize to max_side px."""
     raw = img_b64.split(",", 1)[1] if "," in img_b64 else img_b64
     if len(raw) > settings.max_b64_chars:
         raise HTTPException(
@@ -132,7 +142,6 @@ def _decode_image(img_b64: str, max_side: int = 640):
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             return None
-        # ── Resize to speed up DeepFace (keep aspect ratio) ──────
         h, w = img.shape[:2]
         if max(h, w) > max_side:
             scale = max_side / max(h, w)
@@ -143,30 +152,38 @@ def _decode_image(img_b64: str, max_side: int = 640):
         return None
 
 
-# ── #2 Async DeepFace helpers ────────────────────────────────────────────────
+def _cv2_to_pil(img_bgr) -> Image.Image:
+    """Convert OpenCV BGR image to PIL RGB image."""
+    return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
 
-async def _async_represent(img) -> list:
+
+def _get_embedding_sync(img_bgr) -> Optional[list]:
     """
-    Run DeepFace.represent() in a dedicated thread pool (single worker to keep
-    TensorFlow's global graph safe). Uses opencv detector — ~3-5x faster than
-    the default retinaface/mtcnn backends.
+    Run MTCNN face detection + InceptionResnetV1 embedding synchronously.
+    Called inside thread pool executor — must be thread-safe (single worker).
+    Returns embedding list or None if no face detected.
     """
+    pil_img = _cv2_to_pil(img_bgr)
+    face_tensor = _mtcnn(pil_img)   # returns (3,160,160) tensor or None
+    if face_tensor is None:
+        return None
+    with torch.no_grad():
+        embedding = _resnet(face_tensor.unsqueeze(0).to(_device))
+    return embedding.cpu().numpy().flatten().tolist()
+
+
+async def _async_embed(img_bgr) -> Optional[list]:
+    """Run face embedding in the dedicated thread pool."""
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(
-        _executor,
-        lambda: DeepFace.represent(
-            img_path=img,
-            model_name=settings.DEEPFACE_MODEL,
-            detector_backend="opencv",
-            enforce_detection=False,
-        ),
-    )
-    return results
+    return await loop.run_in_executor(_executor, _get_embedding_sync, img_bgr)
 
 
 async def _get_embeddings(images_b64: List[str]) -> List[list]:
-    """Convert a list of base64 images to face embeddings asynchronously."""
-    tasks = []
+    """
+    Convert a list of base64 images to face embeddings.
+    Each image is also processed horizontally mirrored (flip augmentation)
+    so that side-face angles are robustly covered from both directions.
+    """
     imgs = []
     for img_b64 in images_b64:
         img = _decode_image(img_b64)
@@ -179,32 +196,37 @@ async def _get_embeddings(images_b64: List[str]) -> List[list]:
             detail="No valid images could be decoded.",
         )
 
-    results = await asyncio.gather(*[_async_represent(img) for img in imgs])
-    embeddings = []
-    for r in results:
-        if r:
-            embeddings.append(r[0]["embedding"])
+    # Original + horizontally mirrored versions
+    all_imgs = []
+    for img in imgs:
+        all_imgs.append(img)
+        all_imgs.append(cv2.flip(img, 1))
+
+    results = await asyncio.gather(*[_async_embed(img) for img in all_imgs])
+    embeddings = [r for r in results if r is not None]
 
     if not embeddings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No faces could be detected in the provided images. Use better lighting.",
         )
-    logger.info("Extracted %d embedding(s) from %d image(s)", len(embeddings), len(imgs))
+    logger.info(
+        "Extracted %d embedding(s) from %d image(s) (incl. flip augmentation)",
+        len(embeddings), len(imgs),
+    )
     return embeddings
 
 
-def _cosine_distance(a: list, b: list) -> float:
-    """1 - cosine_similarity. Returns 1.0 (worst) if vectors are zero or non-finite."""
+def _cosine_similarity(a: list, b: list) -> float:
+    """Cosine similarity in [0,1]. Returns 0.0 (worst) on bad vectors."""
     a_arr, b_arr = np.array(a, dtype=np.float64), np.array(b, dtype=np.float64)
-    # Guard against NaN/Inf coming from DeepFace on bad frames
     if not np.all(np.isfinite(a_arr)) or not np.all(np.isfinite(b_arr)):
-        return 1.0
+        return 0.0
     na, nb = np.linalg.norm(a_arr), np.linalg.norm(b_arr)
     if na == 0 or nb == 0:
-        return 1.0
-    dist = float(1.0 - np.dot(a_arr, b_arr) / (na * nb))
-    return dist if math.isfinite(dist) else 1.0
+        return 0.0
+    sim = float(np.dot(a_arr, b_arr) / (na * nb))
+    return sim if math.isfinite(sim) else 0.0
 
 
 def _get_collection():
@@ -220,7 +242,11 @@ def _get_collection():
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(user: UserRegister):
-    """Register a new user with face embeddings from 3 blink-captured images."""
+    """
+    Register a new user with face embeddings from 3 blink-captured images.
+    The very first user registered (when the collection is empty) is granted
+    the 'admin' role; all subsequent registrations receive 'user' role.
+    """
     col = _get_collection()
 
     if col.find_one({"phone": user.phone}):
@@ -229,41 +255,50 @@ async def register(user: UserRegister):
             detail="A user with this phone number is already registered.",
         )
 
+    # ── First-user-is-admin logic ─────────────────────────────────
+    is_first_user = col.count_documents({}) == 0
+    role = "admin" if is_first_user else "user"
+
     embeddings = await _get_embeddings(user.images)
 
     user_data = {
         "name": user.name.strip(),
         "phone": user.phone.strip(),
         "masked_id": user.masked_id.strip(),
+        "role": role,
         "embeddings": embeddings,
-        "model": settings.DEEPFACE_MODEL,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
     }
     col.insert_one(user_data)
-    logger.info("New user registered: phone=%s", user.phone)
-    return {"status": "registered", "message": f"Welcome, {user.name.strip()}! Registration successful."}
+    logger.info("New user registered: phone=%s role=%s", user.phone, role)
+    return {
+        "status": "registered",
+        "role": role,
+        "message": f"Welcome, {user.name.strip()}! Registration successful."
+        + (" You are the first user and have been granted admin access." if is_first_user else ""),
+    }
 
 
 @router.post("/check-user")
 async def check_user(payload: CheckUserPayload):
     """Check if a user with the given phone number exists (no auth required)."""
     col = _get_collection()
-    user = col.find_one({"phone": payload.phone.strip()}, {"name": 1})
+    user = col.find_one({"phone": payload.phone.strip()}, {"name": 1, "role": 1})
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No account found for this phone number.",
         )
-    return {"exists": True, "name": user["name"]}
+    return {"exists": True, "name": user["name"], "role": user.get("role", "user")}
 
 
 @router.post("/verify-face")
-@limiter.limit(settings.RATE_LIMIT_FACE_VERIFY)  # #4 slowapi rate limit (5/min per IP)
+@limiter.limit(settings.RATE_LIMIT_FACE_VERIFY)
 async def verify_face(request: Request, data: UserVerify):
     """
     Verify a user's identity using a live blink-captured frame.
-    Returns both an access token (short-lived) and a refresh token (long-lived).
+    Returns access token, refresh token, and user role on success.
     """
     phone = data.phone.strip()
 
@@ -278,41 +313,40 @@ async def verify_face(request: Request, data: UserVerify):
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or corrupt image data."
         )
 
-    # ── #2 Async DeepFace processing ────────────────────────────
     try:
-        result = await _async_represent(img)
-        if not result:
+        live_embedding = await _async_embed(img)
+        if live_embedding is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No face detected in the captured frame. Ensure your face is visible.",
             )
-        live_embedding = result[0]["embedding"]
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("DeepFace processing error for phone=%s: %s", phone, e)
+        logger.error("Face embedding error for phone=%s: %s", phone, e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Face processing failed: {str(e)}",
         )
 
-    # Compare against all stored embeddings
-    min_distance = min(
-        _cosine_distance(live_embedding, stored_emb)
+    # Compare against all stored embeddings — take the best match
+    max_similarity = max(
+        _cosine_similarity(live_embedding, stored_emb)
         for stored_emb in user["embeddings"]
     )
-    # Clamp to valid range — guards against any residual NaN/Inf before JSON serialisation
-    if not math.isfinite(min_distance):
-        min_distance = 1.0
-    confidence = round(max(0.0, min(1.0, float(1.0 - min_distance))), 4)
+    if not math.isfinite(max_similarity):
+        max_similarity = 0.0
+
+    confidence = round(max(0.0, min(1.0, float(max_similarity))), 4)
+    role = user.get("role", "user")
     logger.info(
-        "Verification [%s]: distance=%.4f threshold=%.2f result=%s",
-        phone, min_distance, settings.FACE_DISTANCE_THRESHOLD,
-        "PASS" if min_distance < settings.FACE_DISTANCE_THRESHOLD else "FAIL",
+        "Verification [%s]: similarity=%.4f threshold=%.2f result=%s role=%s",
+        phone, max_similarity, settings.FACENET_THRESHOLD,
+        "PASS" if max_similarity >= settings.FACENET_THRESHOLD else "FAIL",
+        role,
     )
 
-    if min_distance < settings.FACE_DISTANCE_THRESHOLD:
-        # ── #5 Issue both access + refresh tokens ────────────────
+    if max_similarity >= settings.FACENET_THRESHOLD:
         access_token = create_access_token(subject=phone)
         refresh_token = create_refresh_token(subject=phone)
         return {
@@ -321,9 +355,11 @@ async def verify_face(request: Request, data: UserVerify):
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
+            "role": role,
             "user": {
                 "name": user["name"],
                 "masked_id": user["masked_id"],
+                "role": role,
             },
         }
     else:
@@ -336,14 +372,8 @@ async def verify_face(request: Request, data: UserVerify):
 
 @router.post("/refresh")
 async def refresh_access_token(payload: RefreshPayload):
-    """
-    Issue a new access token using a valid refresh token.
-    Allows users to stay logged in beyond the 15-minute access token window
-    without needing to re-scan their face.
-    """
+    """Issue a new access token using a valid refresh token."""
     phone = decode_refresh_token(payload.refresh_token)
-
-    # Verify the user still exists in the database
     col = _get_collection()
     user = col.find_one({"phone": phone}, {"name": 1})
     if not user:
@@ -351,13 +381,9 @@ async def refresh_access_token(payload: RefreshPayload):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User no longer exists.",
         )
-
     new_access_token = create_access_token(subject=phone)
     logger.info("Access token refreshed for phone=%s", phone)
-    return {
-        "access_token": new_access_token,
-        "token_type": "bearer",
-    }
+    return {"access_token": new_access_token, "token_type": "bearer"}
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +397,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
         "name": current_user.get("name"),
         "phone": current_user.get("phone"),
         "masked_id": current_user.get("masked_id"),
-        "model": current_user.get("model"),
+        "role": current_user.get("role", "user"),
         "created_at": current_user.get("created_at"),
         "updated_at": current_user.get("updated_at"),
     }
@@ -389,7 +415,7 @@ async def update_profile(data: UserUpdate, current_user: dict = Depends(get_curr
     update_data["updated_at"] = datetime.utcnow()
     col = _get_collection()
     col.update_one({"phone": current_user["phone"]}, {"$set": update_data})
-    logger.info("Profile updated for phone=%s, fields=%s", current_user["phone"], list(update_data.keys()))
+    logger.info("Profile updated for phone=%s", current_user["phone"])
     return {"status": "success", "message": "Profile updated successfully."}
 
 
@@ -400,13 +426,7 @@ async def update_face(data: UserFaceUpdate, current_user: dict = Depends(get_cur
     col = _get_collection()
     col.update_one(
         {"phone": current_user["phone"]},
-        {
-            "$set": {
-                "embeddings": embeddings,
-                "model": settings.DEEPFACE_MODEL,
-                "updated_at": datetime.utcnow(),
-            }
-        },
+        {"$set": {"embeddings": embeddings, "updated_at": datetime.utcnow()}},
     )
     logger.info("Face ID updated for phone=%s", current_user["phone"])
     return {"status": "success", "message": "Face ID updated successfully."}
@@ -424,12 +444,12 @@ async def delete_profile(current_user: dict = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Admin (require X-Admin-Secret header)
+# Routes — Admin (require JWT role=admin)
 # ---------------------------------------------------------------------------
 
-@router.get("/admin/users", tags=["Admin"], dependencies=[Depends(verify_admin_secret)])
-async def admin_get_all_users():
-    """List all registered users. Requires X-Admin-Secret header."""
+@router.get("/admin/users", tags=["Admin"])
+async def admin_get_all_users(admin: dict = Depends(require_admin)):
+    """List all registered users. Requires admin role."""
     col = _get_collection()
     users = []
     for user in col.find({}, {"embeddings": 0, "_id": 0}).sort("created_at", -1):
@@ -437,17 +457,50 @@ async def admin_get_all_users():
             "name": user.get("name", "Unknown"),
             "phone": user.get("phone", "N/A"),
             "masked_id": user.get("masked_id", "N/A"),
-            "model": user.get("model", "N/A"),
+            "role": user.get("role", "user"),
             "created_at": user.get("created_at"),
             "updated_at": user.get("updated_at"),
         })
-    logger.info("Admin listed %d users", len(users))
+    logger.info("Admin [%s] listed %d users", admin["phone"], len(users))
     return users
 
 
-@router.put("/admin/users/{phone}", tags=["Admin"], dependencies=[Depends(verify_admin_secret)])
-async def admin_update_user(phone: str, data: UserUpdate):
-    """Admin: Update a user by phone. Requires X-Admin-Secret header."""
+@router.put("/admin/promote/{phone}", tags=["Admin"])
+async def admin_promote_user(phone: str, admin: dict = Depends(require_admin)):
+    """Promote a user to admin role. Requires admin role."""
+    col = _get_collection()
+    result = col.update_one(
+        {"phone": phone},
+        {"$set": {"role": "admin", "updated_at": datetime.utcnow()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    logger.info("Admin [%s] promoted user %s to admin", admin["phone"], phone)
+    return {"status": "success", "message": f"{phone} has been promoted to admin."}
+
+
+@router.put("/admin/demote/{phone}", tags=["Admin"])
+async def admin_demote_user(phone: str, admin: dict = Depends(require_admin)):
+    """Demote an admin back to user role. Requires admin role."""
+    if phone == admin["phone"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot demote yourself.",
+        )
+    col = _get_collection()
+    result = col.update_one(
+        {"phone": phone},
+        {"$set": {"role": "user", "updated_at": datetime.utcnow()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    logger.info("Admin [%s] demoted user %s to user", admin["phone"], phone)
+    return {"status": "success", "message": f"{phone} has been demoted to user."}
+
+
+@router.put("/admin/users/{phone}", tags=["Admin"])
+async def admin_update_user(phone: str, data: UserUpdate, admin: dict = Depends(require_admin)):
+    """Admin: Update a user's name or masked ID."""
     update_data = {k: v.strip() for k, v in data.dict().items() if v is not None and v.strip()}
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid fields provided.")
@@ -456,16 +509,21 @@ async def admin_update_user(phone: str, data: UserUpdate):
     result = col.update_one({"phone": phone}, {"$set": update_data})
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-    logger.info("Admin updated user phone=%s fields=%s", phone, list(update_data.keys()))
+    logger.info("Admin [%s] updated user phone=%s", admin["phone"], phone)
     return {"status": "success", "message": "User updated successfully."}
 
 
-@router.delete("/admin/users/{phone}", tags=["Admin"], dependencies=[Depends(verify_admin_secret)])
-async def admin_delete_user(phone: str):
-    """Admin: Delete a user by phone. Requires X-Admin-Secret header."""
+@router.delete("/admin/users/{phone}", tags=["Admin"])
+async def admin_delete_user(phone: str, admin: dict = Depends(require_admin)):
+    """Admin: Delete a user by phone."""
+    if phone == admin["phone"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own account from the admin panel.",
+        )
     col = _get_collection()
     result = col.delete_many({"phone": phone})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-    logger.info("Admin deleted %d record(s) for phone=%s", result.deleted_count, phone)
+    logger.info("Admin [%s] deleted %d record(s) for phone=%s", admin["phone"], result.deleted_count, phone)
     return {"status": "success", "message": f"Deleted {result.deleted_count} record(s) for {phone}."}

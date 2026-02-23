@@ -7,33 +7,32 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// ─── Token Storage Helpers ────────────────────────────────────────────────────
-export const storeTokens = ({ access_token, refresh_token }) => {
+// ─── Token / Role Storage ─────────────────────────────────────────────────────
+export const storeTokens = ({ access_token, refresh_token, role }) => {
   if (access_token) localStorage.setItem('token', access_token);
   if (refresh_token) localStorage.setItem('refresh_token', refresh_token);
+  if (role) localStorage.setItem('role', role);
 };
 
 export const clearTokens = () => {
   localStorage.removeItem('token');
   localStorage.removeItem('refresh_token');
+  localStorage.removeItem('role');
 };
 
+export const getRole = () => localStorage.getItem('role') || 'user';
+
 // ─── Request Interceptor ─────────────────────────────────────────────────────
-// Attach JWT access token to every outgoing request
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
   (error) => Promise.reject(error)
 );
 
 // ─── Response Interceptor ────────────────────────────────────────────────────
-// On 401: attempt a silent refresh using the refresh token.
-// If refresh fails (expired), clear all tokens and fire auth:logout event.
 let _isRefreshing = false;
 let _failedQueue = [];
 
@@ -48,15 +47,12 @@ api.interceptors.response.use(
     const originalRequest = error.config;
     if (error.response?.status === 401 && !originalRequest._retry) {
       const refreshToken = localStorage.getItem('refresh_token');
-
       if (!refreshToken) {
         clearTokens();
         window.dispatchEvent(new CustomEvent('auth:logout'));
         return Promise.reject(error);
       }
-
       if (_isRefreshing) {
-        // Queue during ongoing refresh
         return new Promise((resolve, reject) => {
           _failedQueue.push({
             resolve: (token) => { originalRequest.headers.Authorization = `Bearer ${token}`; resolve(api(originalRequest)); },
@@ -64,14 +60,10 @@ api.interceptors.response.use(
           });
         });
       }
-
       originalRequest._retry = true;
       _isRefreshing = true;
-
       try {
-        const { data } = await axios.post(`${API_URL}/auth/refresh`, {
-          refresh_token: refreshToken,
-        });
+        const { data } = await axios.post(`${API_URL}/auth/refresh`, { refresh_token: refreshToken });
         const newAccessToken = data.access_token;
         localStorage.setItem('token', newAccessToken);
         api.defaults.headers.common.Authorization = `Bearer ${newAccessToken}`;
@@ -92,68 +84,27 @@ api.interceptors.response.use(
 );
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
-// Unwraps the API error into a readable string
 export const getErrorMessage = (error) => {
   if (error?.response?.data?.detail) return error.response.data.detail;
   if (error?.message) return error.message;
   return 'An unexpected error occurred.';
 };
 
-// ─── API Functions ───────────────────────────────────────────────────────────
-export const registerUser = async (userData) => {
-  const response = await api.post('/auth/register', userData);
-  return response.data;
-};
+// ─── Auth API ────────────────────────────────────────────────────────────────
+export const registerUser = async (userData) => (await api.post('/auth/register', userData)).data;
+export const checkUser = async (phone) => (await api.post('/auth/check-user', { phone })).data;
+export const verifyUser = async (payload) => (await api.post('/auth/verify-face', payload)).data;
+export const refreshTokens = async (rt) => (await api.post('/auth/refresh', { refresh_token: rt })).data;
+export const getProfile = async () => (await api.get('/auth/profile')).data;
+export const updateProfile = async (data) => (await api.put('/auth/profile', data)).data;
+export const updateFace = async (images) => (await api.put('/auth/profile/face', { images })).data;
+export const deleteAccount = async () => (await api.delete('/auth/profile')).data;
 
-export const checkUser = async (phone) => {
-  const response = await api.post('/auth/check-user', { phone });
-  return response.data;
-};
-
-export const verifyUser = async (payload) => {
-  const response = await api.post('/auth/verify-face', payload);
-  return response.data;
-};
-
-export const getProfile = async () => {
-  const response = await api.get('/auth/profile');
-  return response.data;
-};
-
-export const updateProfile = async (data) => {
-  const response = await api.put('/auth/profile', data);
-  return response.data;
-};
-
-export const updateFace = async (images) => {
-  const response = await api.put('/auth/profile/face', { images });
-  return response.data;
-};
-
-export const deleteAccount = async () => {
-  const response = await api.delete('/auth/profile');
-  return response.data;
-};
-
-export const getAllUsers = async (adminSecret) => {
-  const response = await api.get('/auth/admin/users', {
-    headers: { 'X-Admin-Secret': adminSecret },
-  });
-  return response.data;
-};
-
-export const adminUpdateUser = async (phone, data, adminSecret) => {
-  const response = await api.put(`/auth/admin/users/${phone}`, data, {
-    headers: { 'X-Admin-Secret': adminSecret },
-  });
-  return response.data;
-};
-
-export const adminDeleteUser = async (phone, adminSecret) => {
-  const response = await api.delete(`/auth/admin/users/${phone}`, {
-    headers: { 'X-Admin-Secret': adminSecret },
-  });
-  return response.data;
-};
+// ─── Admin API (JWT-authenticated, role=admin required) ───────────────────────
+export const getAllUsers = async () => (await api.get('/auth/admin/users')).data;
+export const adminUpdateUser = async (phone, data) => (await api.put(`/auth/admin/users/${phone}`, data)).data;
+export const adminDeleteUser = async (phone) => (await api.delete(`/auth/admin/users/${phone}`)).data;
+export const promoteToAdmin = async (phone) => (await api.put(`/auth/admin/promote/${phone}`)).data;
+export const demoteToUser = async (phone) => (await api.put(`/auth/admin/demote/${phone}`)).data;
 
 export default api;

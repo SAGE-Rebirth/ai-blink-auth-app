@@ -2,9 +2,9 @@
 main.py — FastAPI application entry point.
 
 Improvements applied:
-  #6 DeepFace model warm-up in lifespan startup
+  #6 facenet-pytorch model warm-up in lifespan startup
   #4 Redis-backed rate limiting via slowapi
-  #9 Security headers via `secure` middleware
+  #9 Security headers middleware
      (HSTS, X-Content-Type-Options, X-Frame-Options, etc.)
   #8 Structured JSON-friendly logging instead of print()
 """
@@ -42,14 +42,13 @@ async def lifespan(app: FastAPI):
     # 1️⃣  Connect to MongoDB and create indexes
     db.connect()
 
-    # 2️⃣  DeepFace warm-up — downloads + initialises model on startup, not on first request
-    logger.info("Warming up DeepFace model: %s …", settings.DEEPFACE_MODEL)
+    # 2️⃣  facenet-pytorch warm-up — triggers weight download on first run (one-time, ~90 MB)
+    logger.info("Warming up facenet-pytorch (MTCNN + InceptionResnetV1) …")
     try:
-        from deepface import DeepFace
-        DeepFace.build_model(settings.DEEPFACE_MODEL)
-        logger.info("DeepFace model ready.")
+        from routers.auth import _mtcnn, _resnet  # noqa: F401 — import triggers model init
+        logger.info("facenet-pytorch models ready (device: %s).", next(_resnet.parameters()).device)
     except Exception as exc:
-        logger.warning("DeepFace warm-up failed (non-fatal): %s", exc)
+        logger.warning("facenet-pytorch warm-up failed (non-fatal): %s", exc)
 
     yield
 
@@ -67,7 +66,7 @@ tags_metadata = [
     },
     {
         "name": "Admin",
-        "description": "Admin-only endpoints. Require X-Admin-Secret header.",
+        "description": "Admin-only endpoints. Require JWT with role=admin.",
     },
 ]
 
@@ -161,6 +160,7 @@ async def health():
     return {
         "status": "ok" if db_conn is not None else "degraded",
         "db_connected": db_conn is not None,
-        "deepface_model": settings.DEEPFACE_MODEL,
-        "version": "3.0.0",
+        "face_model": "facenet-pytorch (InceptionResnetV1 / vggface2)",
+        "facenet_threshold": settings.FACENET_THRESHOLD,
+        "version": "4.0.0",
     }

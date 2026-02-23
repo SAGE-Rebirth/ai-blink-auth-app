@@ -95,8 +95,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return user
 
 
+async def require_admin(current_user: dict = Depends(get_current_user)):
+    """FastAPI dependency: ensures the current user has role='admin'."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return current_user
+
+
 def verify_admin_secret(x_admin_secret: str = Header(default="")):
-    """FastAPI dependency for admin-only endpoints. Validates the X-Admin-Secret header."""
+    """Legacy FastAPI dependency for admin-only endpoints (X-Admin-Secret header)."""
     if not settings.ADMIN_SECRET:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

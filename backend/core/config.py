@@ -1,6 +1,5 @@
 """
 config.py — Pydantic v2 Settings with full type coercion and .env auto-loading.
-Replaces manual os.getenv() calls with a proper, validated settings model.
 """
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,13 +27,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15        # Short-lived access token
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7           # Long-lived refresh token
 
-    # Admin
+    # Admin (legacy header — kept for backwards compat, not used for new JWT-role auth)
     ADMIN_SECRET: str = ""
 
-    # Face recognition
-    DEEPFACE_MODEL: str = "ArcFace"
-    FACE_DISTANCE_THRESHOLD: float = 0.40
-    MAX_IMAGE_SIZE_MB: float = 5.0              # Guard: reject base64 images bigger than this
+    # Face recognition — facenet-pytorch
+    FACENET_THRESHOLD: float = 0.85   # cosine-similarity threshold (higher = stricter)
+    MAX_IMAGE_SIZE_MB: float = 5.0    # Guard: reject base64 images bigger than this
 
     # Rate limiter (slowapi / Redis)
     RATE_LIMIT_ENABLED: bool = True

@@ -206,12 +206,13 @@ const BlinkDetector = ({
                 <Webcam
                     ref={webcamRef}
                     audio={false}
+                    mirrored={true}
                     screenshotFormat="image/jpeg"
                     screenshotQuality={0.92}
                     videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                 />
-                <canvas ref={canvasRef} />
+                <canvas ref={canvasRef} style={{ transform: 'scaleX(-1)' }} />
 
                 {/* ── Countdown ring overlay ─────────────────────────── */}
                 {autoCapture && countdown !== null && (
