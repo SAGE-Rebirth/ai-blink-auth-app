@@ -1,6 +1,9 @@
 fastapi
 uvicorn[standard]
-deepface
+facenet-pytorch
+torch
+torchvision
+Pillow
 pymongo
 python-multipart
 numpy

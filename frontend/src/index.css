@@ -1,83 +1,141 @@
-/* =========================================================
-   PREMIUM DESIGN SYSTEM — AI Blink System
-   ========================================================= */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-:root {
-  --font-base: 'Inter', system-ui, sans-serif;
+/* ── Global base ─────────────────────────────────────────────────────── */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-  /* Color Palette */
-  --bg-root: #09090c;
-  --bg-card: #13131a;
-  --bg-card-hover: #1a1a24;
-  --bg-input: #1e1e28;
-  --border: rgba(255, 255, 255, 0.07);
-  --border-focus: rgba(124, 106, 247, 0.7);
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
 
-  /* Accent — purple-blue gradient */
-  --accent: #7c6af7;
-  --accent-dim: rgba(124, 106, 247, 0.15);
-  --accent-glow: rgba(124, 106, 247, 0.35);
+  body {
+    @apply bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 min-h-screen text-slate-100;
+  }
 
-  /* Semantic */
-  --success: #34d399;
-  --success-dim: rgba(52, 211, 153, 0.12);
-  --error: #f87171;
-  --error-dim: rgba(248, 113, 113, 0.12);
-  --warning: #fbbf24;
-  --warning-dim: rgba(251, 191, 36, 0.12);
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
 
-  /* Text */
-  --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.55);
-  --text-muted: rgba(255, 255, 255, 0.3);
+  ::-webkit-scrollbar-track {
+    @apply bg-slate-900;
+  }
 
-  /* Radii */
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 20px;
-  --radius-xl: 28px;
-  --radius-full: 9999px;
-
-  /* Shadows */
-  --shadow-card: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border);
-  --shadow-glow: 0 0 30px var(--accent-glow);
-  --shadow-input: 0 2px 8px rgba(0, 0, 0, 0.3);
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-600 rounded-full;
+  }
 }
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* ── Webcam container ─────────────────────────────────────────────────── */
+.webcam-container {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  aspect-ratio: 4/3;
+  background: #000;
 }
 
-html, body, #root {
-  height: 100%;
+.webcam-container video,
+.webcam-container canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-body {
-  font-family: var(--font-base);
-  background-color: var(--bg-root);
-  color: var(--text-primary);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  /* Rich mesh gradient background */
-  background-image:
-    radial-gradient(ellipse at 20% 50%, rgba(124, 106, 247, 0.08) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 20%, rgba(60, 150, 255, 0.06) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 80%, rgba(124, 106, 247, 0.04) 0%, transparent 50%);
-  background-attachment: fixed;
+/* ── EAR meter canvas ───────────────────────────────────────────────── */
+canvas {
+  pointer-events: none;
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
+/* ── Spinner ───────────────────────────────────────────────────────── */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-button {
-  font-family: var(--font-base);
-  cursor: pointer;
+.spinner {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(124, 106, 247, 0.3);
+  border-top-color: #7c6af7;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+/* ── Pulse animation ─────────────────────────────────────────────────── */
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1)
+  }
+
+  50% {
+    opacity: 0.8;
+    transform: scale(1.05)
+  }
+}
+
+.animate-pulse-ring {
+  animation: pulse 1s infinite;
+}
+
+/* Legacy blink-status styles (used in BlinkDetector) */
+.blink-detector {
+  @apply w-full;
+}
+
+.blink-status-bar {
+  @apply flex items-center gap-2 mt-2 text-sm text-slate-300 px-1;
+}
+
+.blink-status-bar__dot {
+  @apply w-2.5 h-2.5 rounded-full flex-shrink-0;
+  transition: background-color 0.3s;
+}
+
+.blink-status-bar__dot--no-face {
+  @apply bg-slate-500;
+}
+
+.blink-status-bar__dot--ready {
+  @apply bg-emerald-400;
+}
+
+.blink-status-bar__dot--detected {
+  @apply bg-primary-500;
+  animation: pulse 0.8s infinite;
+}
+
+/* Capture dots */
+.capture-dots {
+  @apply flex justify-center gap-3 mb-4;
+}
+
+.capture-dot {
+  @apply w-3 h-3 rounded-full bg-slate-600 transition-all duration-300;
+}
+
+.capture-dot--filled {
+  @apply bg-primary-500 scale-125;
+}
+
+/* Preview thumbs */
+.preview-thumbs {
+  @apply flex gap-2 mt-3 justify-center;
+}
+
+.preview-thumb {
+  @apply w-16 h-16 object-cover rounded-lg border-2 border-primary-500;
 }
