@@ -21,12 +21,22 @@ const StatCard = ({ icon, label, value, color }) => (
     </div>
 );
 
+// Decode the phone (subject) from the stored JWT without a library
+const getCurrentAdminPhone = () => {
+    try {
+        const token = localStorage.getItem('token');
+        if (!token) return null;
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return payload.sub || null;
+    } catch { return null; }
+};
+
 const AdminDashboard = () => {
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [alert, setAlert] = useState(null);
     const [editMode, setEditMode] = useState(null);
-    const [editForm, setEditForm] = useState({ name: '', masked_id: '' });
+    const [editForm, setEditForm] = useState({ name: '', masked_id: '', role: 'user' });
     const [confirm, setConfirm] = useState(null);
     const [search, setSearch] = useState('');
 
@@ -66,43 +76,32 @@ const AdminDashboard = () => {
     };
 
     // ── Edit ───────────────────────────────────────────────────────────
-    const startEdit = (user) => { setEditMode(user.phone); setEditForm({ name: user.name, masked_id: user.masked_id }); };
+    const startEdit = (user) => { setEditMode(user.phone); setEditForm({ name: user.name, masked_id: user.masked_id, role: user.role || 'user' }); };
     const cancelEdit = () => setEditMode(null);
     const saveEdit = async (phone) => {
         try {
-            await adminUpdateUser(phone, editForm);
-            setUsers((prev) => prev.map((u) => u.phone === phone ? { ...u, ...editForm } : u));
+            const originalUser = users.find((u) => u.phone === phone);
+            const roleChanged = originalUser && originalUser.role !== editForm.role;
+
+            // Save name / masked_id changes
+            await adminUpdateUser(phone, { name: editForm.name, masked_id: editForm.masked_id });
+
+            // Apply role change if needed
+            if (roleChanged) {
+                if (editForm.role === 'admin') {
+                    await promoteToAdmin(phone);
+                } else {
+                    await demoteToUser(phone);
+                }
+            }
+
+            setUsers((prev) => prev.map((u) => u.phone === phone ? { ...u, name: editForm.name, masked_id: editForm.masked_id, role: editForm.role } : u));
             setEditMode(null);
-            setSuccess('User updated.');
+            setSuccess('User updated.' + (roleChanged ? ` Role changed to ${editForm.role}.` : ''));
         } catch (err) { setError(getErrorMessage(err)); }
     };
 
-    // ── Promote / Demote ───────────────────────────────────────────────
-    const handleToggleRole = (user) => {
-        const isPromoting = user.role !== 'admin';
-        setConfirm({
-            title: isPromoting ? 'Promote to Admin' : 'Demote to User',
-            message: isPromoting
-                ? `Grant admin access to ${user.name}? They will have full admin privileges.`
-                : `Remove admin access from ${user.name}?`,
-            danger: !isPromoting,
-            confirmLabel: isPromoting ? 'Promote' : 'Demote',
-            onConfirm: async () => {
-                setConfirm(null);
-                try {
-                    if (isPromoting) {
-                        await promoteToAdmin(user.phone);
-                        setUsers((prev) => prev.map((u) => u.phone === user.phone ? { ...u, role: 'admin' } : u));
-                        setSuccess(`${user.name} is now an admin.`);
-                    } else {
-                        await demoteToUser(user.phone);
-                        setUsers((prev) => prev.map((u) => u.phone === user.phone ? { ...u, role: 'user' } : u));
-                        setSuccess(`${user.name} is now a user.`);
-                    }
-                } catch (err) { setError(getErrorMessage(err)); }
-            },
-        });
-    };
+
 
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
 
@@ -113,6 +112,8 @@ const AdminDashboard = () => {
 
     const adminCount = users.filter(u => u.role === 'admin').length;
     const userCount = users.length - adminCount;
+    const currentAdminPhone = getCurrentAdminPhone();
+    const isOnlyAdmin = adminCount === 1;
 
     return (
         <div className="w-full max-w-5xl mx-auto px-2 animate-slide-up">
@@ -218,7 +219,38 @@ const AdminDashboard = () => {
                                                 <span className="text-slate-400 font-mono text-xs">{user.masked_id}</span>
                                             )}
                                         </td>
-                                        <td className="px-4 py-3"><RoleBadge role={user.role} /></td>
+                                        <td className="px-4 py-3">
+                                            {editMode === user.phone ? (() => {
+                                                // Lock dropdown if this admin is the ONLY admin editing their own row
+                                                const isSelf = user.phone === currentAdminPhone;
+                                                const locked = isSelf && isOnlyAdmin;
+                                                return (
+                                                    <div className="relative group/role">
+                                                        <select
+                                                            value={editForm.role}
+                                                            onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                                                            className="bg-slate-700 border border-slate-600 rounded-lg px-2 py-1 text-white text-sm focus:outline-none focus:ring-1 focus:ring-primary-500 cursor-pointer"
+                                                        >
+                                                            <option
+                                                                value="user"
+                                                                disabled={locked}
+                                                                title={locked ? 'Cannot demote — you are the only admin.' : ''}
+                                                            >
+                                                                {locked ? '🔒 User (locked)' : '👤 User'}
+                                                            </option>
+                                                            <option value="admin">🛡 Admin</option>
+                                                        </select>
+                                                        {locked && (
+                                                            <p className="absolute top-full mt-1 left-0 text-xs text-amber-400/80 whitespace-nowrap bg-slate-900 border border-amber-500/20 rounded-lg px-2 py-1 z-10 hidden group-hover/role:block">
+                                                                ⚠️ At least one admin must exist.
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })() : (
+                                                <RoleBadge role={user.role} />
+                                            )}
+                                        </td>
                                         <td className="px-4 py-3 text-slate-500 text-xs hidden lg:table-cell">{fmtDate(user.created_at)}</td>
                                         <td className="px-4 py-3">
                                             <div className="flex items-center justify-end gap-1.5">
@@ -230,16 +262,11 @@ const AdminDashboard = () => {
                                                 ) : (
                                                     <>
                                                         <button onClick={() => startEdit(user)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs hover:bg-blue-500/20 transition-all opacity-0 group-hover:opacity-100">Edit</button>
-                                                        <button
-                                                            onClick={() => handleToggleRole(user)}
-                                                            className={`px-2.5 py-1 rounded-lg text-xs border transition-all ${user.role === 'admin'
-                                                                    ? 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20'
-                                                                    : 'bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20'
-                                                                }`}
-                                                        >
-                                                            {user.role === 'admin' ? 'Demote' : 'Promote'}
-                                                        </button>
-                                                        <button onClick={() => requestDelete(user)} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs hover:bg-red-500/20 transition-all">Delete</button>
+                                                        {user.role === 'admin' && isOnlyAdmin ? (
+                                                            <span title="Cannot delete the only admin" className="px-2.5 py-1 rounded-lg bg-slate-700/30 text-slate-500 border border-slate-600/20 text-xs cursor-not-allowed">🔒 Delete</span>
+                                                        ) : (
+                                                            <button onClick={() => requestDelete(user)} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs hover:bg-red-500/20 transition-all">Delete</button>
+                                                        )}
                                                     </>
                                                 )}
                                             </div>

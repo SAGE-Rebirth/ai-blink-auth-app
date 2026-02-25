@@ -8,6 +8,10 @@ const BLINK_THRESHOLD = 0.25;
 const EYE_OPEN_THRESHOLD = 0.30;
 const MAX_BLINK_FRAMES = 12;
 const BLINK_COOLDOWN_MS = 1200;
+// Minimum face height as a fraction of frame height.
+// 0.28 = face must fill ~28% of frame height ≈ 70-80 cm from camera (normal desk distance).
+// Increase toward 0.40 for stricter near-only capture.
+const FACE_PROXIMITY_MIN = 0.28;
 
 /**
  * BlinkDetector
@@ -28,6 +32,7 @@ const BlinkDetector = ({
     const canvasRef = useRef(null);
     const [status, setStatus] = useState('Initializing...');
     const [faceDetected, setFaceDetected] = useState(false);
+    const [faceNearEnough, setFaceNearEnough] = useState(false);
     const [countdown, setCountdown] = useState(null); // null | number
 
     // Blink state in refs to avoid stale closures
@@ -98,7 +103,48 @@ const BlinkDetector = ({
             const landmarks = results.multiFaceLandmarks[0];
             const ear = getAvgEAR(landmarks);
 
-            // ── Draw EAR meter on canvas ───────────────────────────────
+            // ── Proximity check: measure face height as fraction of frame height ──
+            // Landmark 10 = forehead top, 152 = chin tip (both in normalised 0-1 coords)
+            const faceHeightRatio = Math.abs(landmarks[152].y - landmarks[10].y);
+            const nearEnough = faceHeightRatio >= FACE_PROXIMITY_MIN;
+            setFaceNearEnough(nearEnough);
+
+            // ── Face bounding box (extreme landmarks + padding) ────────
+            // 10=forehead, 152=chin, 234=left cheek, 454=right cheek
+            const fx1 = landmarks[234].x * canvas.width;
+            const fx2 = landmarks[454].x * canvas.width;
+            const fy1 = landmarks[10].y * canvas.height;
+            const fy2 = landmarks[152].y * canvas.height;
+            const faceW = Math.abs(fx2 - fx1);
+            const faceH = Math.abs(fy2 - fy1);
+            // ~20% face-width horizontally, ~15% face-height vertically ≈ 5 cm padding
+            const padX = faceW * 0.20;
+            const padY = faceH * 0.15;
+            const boxX = Math.max(0, Math.min(fx1, fx2) - padX);
+            const boxY = Math.max(0, fy1 - padY);
+            const boxW = Math.min(canvas.width, Math.max(fx1, fx2) + padX) - boxX;
+            const boxH = Math.min(canvas.height, fy2 + padY) - boxY;
+            const boxColor = nearEnough ? '#7c6af7' : '#f59e0b';
+            ctx.save();
+            ctx.strokeStyle = boxColor;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = boxColor;
+            ctx.shadowBlur = 14;
+            ctx.strokeRect(boxX, boxY, boxW, boxH);
+            const cLen = Math.min(boxW, boxH) * 0.12;
+            ctx.lineWidth = 3;
+            [[boxX, boxY, 1, 1], [boxX + boxW, boxY, -1, 1],
+            [boxX, boxY + boxH, 1, -1], [boxX + boxW, boxY + boxH, -1, -1]
+            ].forEach(([cx, cy, sx, sy]) => {
+                ctx.beginPath();
+                ctx.moveTo(cx + sx * cLen, cy);
+                ctx.lineTo(cx, cy);
+                ctx.lineTo(cx, cy + sy * cLen);
+                ctx.stroke();
+            });
+            ctx.restore();
+
+            // ── EAR meter (bottom centre) ──────────────────────────────
             const meterWidth = 140;
             const meterHeight = 8;
             const meterX = canvas.width / 2 - meterWidth / 2;
@@ -111,13 +157,22 @@ const BlinkDetector = ({
             ctx.roundRect(meterX, meterY, meterWidth * earNorm, meterHeight, 4);
             ctx.fill();
 
-            // ── Auto-capture mode: start countdown once face found ─────
+            // ── Auto-capture mode: start countdown once face is close enough ──
             if (autoCapture) {
+                if (!nearEnough) {
+                    setStatus('Move closer to the camera 📷');
+                    return;
+                }
                 startCountdown();
                 return;
             }
 
-            // ── Blink detection mode ───────────────────────────────────
+            // ── Blink detection mode ────────────────────────────────────────
+            if (!nearEnough) {
+                setStatus('Move closer to the camera 📷');
+                blinkStateRef.current = { isBlinking: false, framesInBlink: 0 };
+                return;
+            }
             const blink = blinkStateRef.current;
             const now = Date.now();
 
@@ -195,9 +250,11 @@ const BlinkDetector = ({
     }, [onResults, disabled, autoCapture]);
 
     const dotClass = faceDetected
-        ? status.includes('Captured') || status.includes('Blink Detected')
-            ? 'blink-status-bar__dot blink-status-bar__dot--detected'
-            : 'blink-status-bar__dot blink-status-bar__dot--ready'
+        ? !faceNearEnough
+            ? 'blink-status-bar__dot blink-status-bar__dot--no-face'  // orange: face found but too far
+            : status.includes('Captured') || status.includes('Blink Detected')
+                ? 'blink-status-bar__dot blink-status-bar__dot--detected'
+                : 'blink-status-bar__dot blink-status-bar__dot--ready'
         : 'blink-status-bar__dot blink-status-bar__dot--no-face';
 
     return (

@@ -72,11 +72,6 @@ function App() {
             ) : (
               <>
                 <NavBtn active={isActive('/profile')} onClick={() => navigate('/profile')}>My Profile</NavBtn>
-                {role === 'admin' && (
-                  <NavBtn active={isActive('/admin')} onClick={() => navigate('/admin')}>
-                    <span className="flex items-center gap-1">🛡 Admin</span>
-                  </NavBtn>
-                )}
                 <button
                   onClick={handleLogout}
                   className="ml-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all duration-200"
@@ -91,7 +86,7 @@ function App() {
 
       {/* ── Page Content ── */}
       <main className="pt-14 min-h-screen flex items-center justify-center p-4">
-        <div className="w-full max-w-md animate-fade-in">
+        <div className={`w-full animate-fade-in ${location.pathname === '/admin' ? 'max-w-6xl' : 'max-w-md'}`}>
           <Routes>
             <Route path="/" element={<Login />} />
             <Route path="/register" element={<RegistrationForm />} />
@@ -109,8 +104,8 @@ const NavBtn = ({ children, active, onClick }) => (
   <button
     onClick={onClick}
     className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${active
-        ? 'bg-primary-500/20 text-primary-300 border border-primary-500/30'
-        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
+      ? 'bg-primary-500/20 text-primary-300 border border-primary-500/30'
+      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
       }`}
   >
     {children}

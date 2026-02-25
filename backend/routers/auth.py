@@ -53,7 +53,7 @@ logger.info("Face recognition running on device: %s", _device)
 _mtcnn = MTCNN(
     image_size=160,
     margin=20,
-    min_face_size=40,
+    min_face_size=80,    # Blocks distant tiny faces; 80px ≈ 12% of 640px frame
     thresholds=[0.6, 0.7, 0.7],
     factor=0.709,
     post_process=True,
@@ -436,6 +436,14 @@ async def update_face(data: UserFaceUpdate, current_user: dict = Depends(get_cur
 async def delete_profile(current_user: dict = Depends(get_current_user)):
     """Delete the authenticated user's own account."""
     col = _get_collection()
+    # Block deletion if this is the last admin
+    if current_user.get("role") == "admin":
+        admin_count = col.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete account — you are the only admin. Promote another user to admin first.",
+            )
     result = col.delete_one({"phone": current_user["phone"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
@@ -522,6 +530,15 @@ async def admin_delete_user(phone: str, admin: dict = Depends(require_admin)):
             detail="You cannot delete your own account from the admin panel.",
         )
     col = _get_collection()
+    # Block deletion if the target is the last remaining admin
+    target_user = col.find_one({"phone": phone}, {"role": 1})
+    if target_user and target_user.get("role") == "admin":
+        admin_count = col.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only admin. Promote another user to admin first.",
+            )
     result = col.delete_many({"phone": phone})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
