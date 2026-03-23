@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Org Owner RBAC Schema",
+  "description": "Role-Based Access Control schema for Organization Owner role with full org-level privileges",
+  "type": "object",
+  "properties": {
+    "role": {
+      "type": "string",
+      "const": "org-owner"
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "users": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": true },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "organizations": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": false },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": false }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "verification_sessions": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": true },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "verification_results": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": false },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "audit_logs": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": false },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": false },
+            "delete": { "type": "boolean", "default": false }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": true },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "roles": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": true },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        },
+        "api_keys": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean", "default": true },
+            "read": { "type": "boolean", "default": true },
+            "update": { "type": "boolean", "default": true },
+            "delete": { "type": "boolean", "default": true }
+          },
+          "required": ["create", "read", "update", "delete"]
+        }
+      },
+      "required": [
+        "users",
+        "organizations",
+        "verification_sessions",
+        "verification_results",
+        "audit_logs",
+        "settings",
+        "roles",
+        "api_keys"
+      ]
+    }
+  },
+  "required": ["role", "permissions"]
+}
