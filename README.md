@@ -25,7 +25,15 @@ A full-stack biometric authentication system that uses <b>facial recognition</b>
 <h2 id="overview">Overview</h2>
 
 <p>
-The AI Blink Verification System allows users to register and authenticate using only their face. During registration, three blink-captured images are taken and converted into facial embeddings using <b>DeepFace (ArcFace model)</b>. At login, a fresh blink capture is compared against the stored embeddings using cosine distance. A verified match returns a short-lived <b>JWT access token</b> and a long-lived <b>refresh token</b>.
+The AI Blink Verification System allows users to register and authenticate using only their face.
+
+<b>Registration</b> walks the user through three guided poses (centre, slight left, slight right). Each shot is only taken once a live quality gate passes — one face in frame, correctly framed and level, sharp, well lit, eyes open, and the head actually pointing where the step asks. The frames are converted to 512-d embeddings with <b>insightface</b> (SCRFD detection + ArcFace w600k_r50) and stored as a centroid template.
+
+<b>Login</b> is a two-step handshake. The client requests a single-use liveness challenge, then captures a three-frame bundle around one blink — <code>open_before</code>, <code>closed</code>, <code>open_after</code> — and submits it quoting that challenge. The server runs its own face mesh over the three frames and confirms the eyes really closed, then compares the two open frames against the enrolled template. A verified match returns a short-lived <b>JWT access token</b> and a long-lived <b>refresh token</b>.
+
+<blockquote>
+<b>Why the bundle?</b> Blink detection in the browser proves nothing to the server — a single-image endpoint accepts a photograph POSTed straight to the API, camera or no camera. The client-side EAR check is a usability aid that tells the user when to blink; the security control is the server-side analysis in <code>backend/core/liveness.py</code>.
+</blockquote>
 </p>
 
 ---
@@ -37,27 +45,45 @@ Ai blink system/
 ├── backend/
 │   ├── core/
 │   │   ├── config.py          # Pydantic v2 settings (env-validated)
-│   │   ├── database.py        # MongoDB manager with auto-indexes
+│   │   ├── database.py        # MongoDB manager with auto-indexes + TTL indexes
+│   │   ├── face.py            # SCRFD + ArcFace (or legacy facenet), centroid templates
+│   │   ├── mesh.py            # MediaPipe FaceLandmarker (478 points), geometric EAR
+│   │   ├── liveness.py        # server-side blink verification
+│   │   ├── pad.py             # presentation attack detection (illumination challenge)
+│   │   ├── challenges.py      # single-use challenges + replay defence
 │   │   ├── limiter.py         # slowapi rate limiter (Redis + memory fallback)
 │   │   └── security.py        # JWT access & refresh token logic
 │   ├── routers/
 │   │   └── auth.py            # All auth & admin endpoints
+│   ├── tools/calibrate.py     # measures thresholds against the LFW benchmark
+│   ├── tests/                 # pytest suite (no DB or camera required)
 │   ├── main.py                # FastAPI app, middleware, lifespan
 │   ├── requirements.txt
 │   └── .env.example
 └── frontend/
     └── src/
         ├── components/
-        │   ├── BlinkDetector.jsx
+        │   ├── AuthLayout.jsx      # responsive shells (Narrow / Hero / Split)
+        │   ├── PhotosensitivityNotice.jsx  # consent before the colour flash
+        │   ├── CameraStage.jsx     # shared camera surface + error states
+        │   ├── FaceEnroll.jsx      # guided, quality-gated enrolment capture
+        │   ├── BlinkGate.jsx       # blink-bundle capture for login
         │   ├── Login.jsx
         │   ├── RegistrationForm.jsx
         │   ├── Profile.jsx
         │   ├── AdminDashboard.jsx
         │   └── ConfirmDialog.jsx
+        ├── hooks/
+        │   └── useFaceTracker.js   # one camera + FaceMesh session per screen
+        ├── context/
+        │   └── AuthContext.js
         ├── services/
         │   └── api.js
         ├── utils/
-        │   └── faceMesh.js
+        │   ├── faceMesh.js         # EAR, head pose, framing
+        │   ├── frameQuality.js     # sharpness / brightness / contrast
+        │   ├── enrollSteps.js      # the three guided poses
+        │   └── overlay.js          # canvas overlay drawing
         ├── App.jsx
         ├── App.css
         └── index.css
@@ -242,11 +268,20 @@ New component that replaces all browser-native <code>window.confirm()</code> cal
 | <b>JWT Access Tokens</b> | Short-lived (15 min). Type claim prevents cross-use with refresh tokens |
 | <b>JWT Refresh Tokens</b> | Long-lived (7 days). Stored in <code>localStorage</code>; silently exchanged by the 401 interceptor |
 | <b>Secret Key Enforcement</b> | Application refuses to start if <code>SECRET_KEY</code> is absent or fewer than 16 characters |
-| <b>Admin Endpoints</b> | Protected by <code>X-Admin-Secret</code> header; returns <code>503</code> if unconfigured |
+| <b>Admin Endpoints</b> | Protected by a JWT <code>role=admin</code> check (<code>require_admin</code>) |
+| <b>Server-side liveness</b> | A blink is verified from the server's own 478-point face mesh, not trusted from the browser. The eye must close by a fraction of the user's own resting Eye Aspect Ratio — see <code>core/liveness.py</code> |
+| <b>ArcFace recognition</b> | Measured on LFW at 0.00% false accepts / 0.87% false rejects, against 0.08% / 2.08% for the previous engine. More importantly its genuine and impostor scores do not overlap, so a clean operating point exists |
+| <b>Anti-spoofing (PAD)</b> | The screen flashes a randomised sequence of primaries and the server checks the skin responded to each one. A display emits its own light instead of reflecting ours, so a phone replaying a video of the user cannot pass — see <code>core/pad.py</code> |
+| <b>Centroid templates</b> | Verification scores against the enrolled centroid, never the best-matching stored vector. Measured, that is ~25x more resistant to a template containing a stranger's face |
+| <b>Enrolment poisoning guard</b> | An enrolment set is refused if any capture disagrees with the rest — which is what a bystander caught in frame looks like |
+| <b>Single-use challenges</b> | Every login quotes a challenge that expires in seconds and is consumed atomically, so a captured bundle cannot be replayed |
+| <b>Frame replay cache</b> | Submitted frame hashes are remembered per account, so recycled pixels fail even under a fresh challenge |
+| <b>Account lockout</b> | 5 failed attempts locks the account for 15 minutes — this survives an attacker rotating IPs, which the rate limit alone does not |
+| <b>Enrolment quality gates</b> | Registration refuses blurry, distant, multi-face, or near-identical image sets |
 | <b>Rate Limiting</b> | 5 face verification attempts per minute per IP; Redis-backed with in-memory fallback |
 | <b>Image Size Guard</b> | Base64 payloads exceeding <code>MAX_IMAGE_SIZE_MB</code> are rejected before decoding |
 | <b>Security Headers</b> | HSTS, X-Frame-Options, CSP, XCTO, Referrer-Policy, Permissions-Policy on every response |
-| <b>CORS</b> | Restricted to <code>http://localhost:5173</code> with explicit methods and headers |
+| <b>CORS</b> | Restricted to the origins in <code>CORS_ORIGINS</code> with explicit methods and headers |
 | <b>MongoDB Indexes</b> | Unique index on <code>phone</code> enforces data integrity and speeds up all lookups |
 
 ---
@@ -259,6 +294,8 @@ New component that replaces all browser-native <code>window.confirm()</code> cal
   <li>Python 3.10 or higher</li>
   <li>Node.js 18 or higher</li>
   <li>MongoDB (running locally or a cloud URI)</li>
+  <li>A webcam, and the app served over <code>https://</code> or <code>localhost</code> — browsers refuse camera access otherwise</li>
+  <li>~280 MB of ArcFace models, downloaded automatically on first run into <code>~/.insightface/models/</code></li>
   <li>Redis (optional — the app falls back to in-memory rate limiting if unavailable)</li>
 </ul>
 
@@ -339,7 +376,8 @@ The frontend will be available at `http://localhost:5173`.
 |---|---|---|
 | <code>POST</code> | <code>/auth/register</code> | Register a new user with name, phone, and 3 face images |
 | <code>POST</code> | <code>/auth/check-user</code> | Check whether a phone number is registered |
-| <code>POST</code> | <code>/auth/verify-face</code> | Verify face and receive access + refresh tokens |
+| <code>POST</code> | <code>/auth/challenge</code> | Issue a single-use liveness challenge (required before verifying) |
+| <code>POST</code> | <code>/auth/verify-face</code> | Verify a blink bundle and receive access + refresh tokens |
 | <code>POST</code> | <code>/auth/refresh</code> | Exchange a refresh token for a new access token |
 | <code>GET</code> | <code>/health</code> | Server and database health check |
 
@@ -352,13 +390,97 @@ The frontend will be available at `http://localhost:5173`.
 | <code>PUT</code> | <code>/auth/profile/face</code> | Re-enrol face with 3 new images |
 | <code>DELETE</code> | <code>/auth/profile</code> | Delete the authenticated user's own account |
 
-<h2>Admin Endpoints (<code>X-Admin-Secret</code> Header Required)</h2>
+<h2>Admin Endpoints (Bearer Token with <code>role=admin</code>)</h2>
 
 | Method | Path | Description |
 |---|---|---|
 | <code>GET</code> | <code>/auth/admin/users</code> | List all registered users |
 | <code>PUT</code> | <code>/auth/admin/users/{phone}</code> | Update any user by phone number |
 | <code>DELETE</code> | <code>/auth/admin/users/{phone}</code> | Delete any user by phone number |
+| <code>PUT</code> | <code>/auth/admin/promote/{phone}</code> | Grant a user the admin role |
+| <code>PUT</code> | <code>/auth/admin/demote/{phone}</code> | Revoke a user's admin role |
+| <code>PUT</code> | <code>/auth/admin/unlock/{phone}</code> | Clear a lockout after repeated failed attempts |
+
+<h2>Login Flow</h2>
+
+<p>Verification takes two calls. The challenge expires in seconds and is consumed on first use, so fetch it immediately before submitting.</p>
+
+```http
+POST /auth/challenge
+{ "phone": "9876543210" }
+
+→ {
+    "challenge_id": "…",
+    "nonce": "…",
+    "action": "blink",
+    "expires_in": 60,
+    "illumination": [
+      { "name": "red",   "hex": "#ff0000" },
+      { "name": "green", "hex": "#00ff00" },
+      { "name": "blue",  "hex": "#0000ff" },
+      { "name": "green", "hex": "#00ff00" },
+      { "name": "red",   "hex": "#ff0000" }
+    ],
+    "flash_ms": 400
+  }
+```
+
+```http
+POST /auth/verify-face
+{
+  "phone": "9876543210",
+  "challenge_id": "…",
+  "frames": [
+    { "phase": "open_before", "t_ms": 0,   "image": "data:image/jpeg;base64,…", "ear": 0.31 },
+    { "phase": "closed",      "t_ms": 130, "image": "data:image/jpeg;base64,…", "ear": 0.13 },
+    { "phase": "open_after",  "t_ms": 290, "image": "data:image/jpeg;base64,…", "ear": 0.30 },
+
+    { "phase": "illum_base",  "t_ms": 0,    "image": "…" },
+    { "phase": "illum_0",     "t_ms": 400,  "image": "…" },
+    { "phase": "illum_1",     "t_ms": 800,  "image": "…" },
+    { "phase": "illum_2",     "t_ms": 1200, "image": "…" },
+    { "phase": "illum_3",     "t_ms": 1600, "image": "…" },
+    { "phase": "illum_4",     "t_ms": 2000, "image": "…" }
+  ]
+}
+```
+
+<p>
+The <code>illum_*</code> frames are captured while the screen displays each colour from the challenge's <code>illumination</code> array, in the order given, preceded by one neutral baseline frame. The server reads the expected sequence from its stored challenge and never from the request, so a client cannot choose which colours it is graded against.
+</p>
+
+<p>
+A rejected bundle returns <code>400</code> with a user-facing <code>detail</code>. Liveness rejections also carry the header <code>X-Liveness-Failed: 1</code>, so the UI can coach the user ("blink once, deliberately") rather than accuse them of being the wrong person. An identity mismatch returns <code>200</code> with <code>verified: false</code> and a confidence score.
+</p>
+
+<h2>Calibration</h2>
+
+<p>
+Every face-related threshold in <code>core/config.py</code> comes from a measurement rather than a guess. Reproduce them:
+</p>
+
+```bash
+cd backend
+./venv/bin/pip install scikit-learn      # calibration only, not needed to run the app
+./venv/bin/python tools/calibrate.py
+```
+
+<p>It downloads the LFW benchmark and reports a threshold sweep (false accept vs false reject at each operating point), an aggregator comparison on clean and deliberately poisoned templates, and how mesh geometry compares with the CNN embedding as an identity signal.</p>
+
+<blockquote>
+<b>Development settings.</b> <code>backend/.env</code> currently sets <code>LOCKOUT_ENABLED=False</code> and <code>RATE_LIMIT_ENABLED=False</code> so repeated test captures are not blocked. Together they remove every brute-force protection on face verification. Both must go back to <code>True</code> before any real deployment; the server logs a warning at startup while they are off.
+</blockquote>
+
+<p>Every login also logs its measured liveness metrics, so you can tune against your own cameras:</p>
+
+```
+liveness phone=… passed=True ear_before=0.2981 ear_closed=0.0712
+         ear_after=0.3055 ear_drop=0.7638 blink_ms=290.0
+```
+
+<p>
+Set <code>LIVENESS_DEBUG=True</code> to have those returned in the API response while tuning. Current thresholds are always readable from <code>GET /health</code>.
+</p>
 
 ---
 
@@ -406,4 +528,22 @@ The frontend will be available at `http://localhost:5173`.
 <b>Licence:</b> MIT &nbsp;|&nbsp;
 <b>Python:</b> 3.10+ &nbsp;|&nbsp;
 <b>Node:</b> 18+
+</p>
+
+---
+
+<h2 id="upgrading">Upgrading an existing deployment</h2>
+
+<p>
+The face recognition engine changed from <code>facenet-pytorch</code> to <b>ArcFace</b>. The two embed into unrelated spaces, so <b>every enrolled template must be captured again</b> — a score computed across engines is noise, not a weaker match, so the server refuses rather than guessing.
+</p>
+
+<ul>
+  <li>Affected users get a <code>409</code> at login with a clear prompt to set up Face ID again.</li>
+  <li>The admin user list flags them with a <b>🔄 Re-enrol</b> badge.</li>
+  <li>To postpone the migration, set <code>FACE_ENGINE=facenet</code> in <code>backend/.env</code>. Existing templates keep working, at the older engine's accuracy.</li>
+</ul>
+
+<p>
+If you have migrated everyone, <code>facenet-pytorch</code>, <code>torch</code> and <code>torchvision</code> can be removed from <code>requirements.txt</code> — roughly 1&nbsp;GB of dependencies.
 </p>
