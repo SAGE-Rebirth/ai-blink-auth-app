@@ -32,6 +32,11 @@ yarn-error.log*
 *.swp
 *.swo
 
+# Lighthouse reports (large generated artefacts)
+localhost_*.html
+*.lighthouse.html
+lighthouse-report*.html
+
 # Project Specific
 backend/models/
 backend/data/
