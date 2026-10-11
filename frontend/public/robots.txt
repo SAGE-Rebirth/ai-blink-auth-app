@@ -1,0 +1,6 @@
+# BlinkAuth is an authentication surface — there is nothing here worth indexing,
+# and the routes behind it are private. Lighthouse flagged the dev server's SPA
+# fallback (which served index.html for /robots.txt, i.e. 20 parse errors) as an
+# invalid robots.txt; this is the real file.
+User-agent: *
+Disallow: /
