@@ -1,13 +1,31 @@
 fastapi
 uvicorn[standard]
+# ── Legacy face engine (FACE_ENGINE=facenet) ─────────────────────────────
+# Only needed to run or compare against the old pipeline. If you have migrated
+# every enrolled template to ArcFace, these three can be removed — together
+# they are roughly 1 GB.
 facenet-pytorch
 torch
 torchvision
 Pillow
 pymongo
 python-multipart
-numpy
-opencv-python-headless
+# opencv 4.13+/5.x require numpy 2.x, which breaks torch's numpy bridge.
+opencv-python-headless<4.13
+
+# ── Face recognition: ArcFace (default engine) ────────────────────────────
+# SCRFD detection + ArcFace w600k_r50, ONNX. Downloads ~280 MB of models on
+# first use into ~/.insightface/models/.
+insightface>=0.7,<3
+onnxruntime>=1.16
+
+# ── Liveness: 478-point face mesh for server-side Eye Aspect Ratio ────────
+# Pinned below 0.11 because 1.x drops the `solutions`/tasks API this uses.
+mediapipe>=0.10.14,<0.11
+
+# numpy 2.x breaks torch's C-level numpy bridge, and several of the packages
+# above will happily pull it in. Keep this pin until torch is dropped.
+numpy<2.0
 pydantic[email]
 pydantic-settings
 python-jose[cryptography]
@@ -15,3 +33,11 @@ python-dotenv
 passlib[bcrypt]
 slowapi
 redis
+
+# Testing
+pytest
+httpx
+
+# Calibration only — tools/calibrate.py downloads the LFW benchmark.
+# Not needed to run the app.
+# scikit-learn
