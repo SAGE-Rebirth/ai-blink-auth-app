@@ -14,7 +14,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from core.limiter import limiter
@@ -43,12 +42,38 @@ async def lifespan(app: FastAPI):
     db.connect()
 
     # 2️⃣  facenet-pytorch warm-up — triggers weight download on first run (one-time, ~90 MB)
-    logger.info("Warming up facenet-pytorch (MTCNN + InceptionResnetV1) …")
+    logger.info("Warming up the face engine …")
     try:
-        from routers.auth import _mtcnn, _resnet  # noqa: F401 — import triggers model init
-        logger.info("facenet-pytorch models ready (device: %s).", next(_resnet.parameters()).device)
+        from core import face
+        face.warm_up()
+        logger.info("Face engine ready: %s", face.ENGINE)
     except Exception as exc:
-        logger.warning("facenet-pytorch warm-up failed (non-fatal): %s", exc)
+        logger.warning("Face engine warm-up failed (non-fatal): %s", exc)
+
+    # The mesh powers the liveness check. Fetch its model now (~3.6 MB, once)
+    # so the first user to log in does not wait for a download.
+    try:
+        from core import mesh
+        mesh.ensure_model()
+        logger.info("Face landmarker model ready at %s", mesh.MODEL_PATH)
+    except Exception as exc:
+        logger.error(
+            "Face landmarker model unavailable (%s). Liveness checks will fail until "
+            "backend/models/face_landmarker.task can be downloaded.", exc,
+        )
+
+    for flag, message in (
+        (settings.LOCKOUT_ENABLED, "Account lockout is disabled — brute-force attempts are unlimited."),
+        (settings.RATE_LIMIT_ENABLED, "Rate limiting is disabled."),
+    ):
+        if not flag:
+            logger.warning("DEVELOPMENT SETTING: %s Do not deploy this way.", message)
+
+    if not settings.REQUIRE_LIVENESS:
+        logger.warning(
+            "REQUIRE_LIVENESS is disabled. /auth/verify-face will accept a single frame, "
+            "which means a photograph is enough to log in. Do not run this way in production."
+        )
 
     yield
 
@@ -133,7 +158,7 @@ async def log_latency(request: Request, call_next):
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Admin-Secret"],
@@ -156,11 +181,23 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health():
+    from core import face as face_mod, liveness
+
     db_conn = db.get_db()
     return {
         "status": "ok" if db_conn is not None else "degraded",
         "db_connected": db_conn is not None,
-        "face_model": "facenet-pytorch (InceptionResnetV1 / vggface2)",
-        "facenet_threshold": settings.FACENET_THRESHOLD,
+        "face_engine": face_mod.ENGINE,
+        "face_model": (
+            f"insightface {settings.ARCFACE_MODEL} (SCRFD + ArcFace)"
+            if face_mod.ENGINE == "arcface"
+            else "facenet-pytorch (InceptionResnetV1 / vggface2)"
+        ),
+        "liveness_model": "mediapipe FaceLandmarker (478-point mesh, geometric EAR)",
+        "match_threshold": settings.match_threshold,
+        "liveness_required": settings.REQUIRE_LIVENESS,
+        # Surfaced so the thresholds can be read back while calibrating
+        # against real captures — see core/liveness.py.
+        "liveness_thresholds": liveness.describe_thresholds(),
         "version": "4.0.0",
     }
