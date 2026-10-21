@@ -41,8 +41,26 @@ class Database:
             # Index on created_at — useful for admin sorting
             col.create_index([("created_at", ASCENDING)], background=True)
 
+            # ── Liveness challenges ──────────────────────────────────────
+            # expireAfterSeconds=0 means "expire at the time in expires_at",
+            # so MongoDB itself reaps spent challenges and we never sweep.
+            challenges = self.client[settings.DB_NAME]["liveness_challenges"]
+            challenges.create_index("expires_at", expireAfterSeconds=0, background=True)
+            challenges.create_index([("phone", ASCENDING)], background=True)
+
+            # ── Replay defence ───────────────────────────────────────────
+            # The unique index is the enforcement point: a re-submitted frame
+            # hash fails the insert, which is race-free across workers.
+            seen = self.client[settings.DB_NAME]["seen_frames"]
+            seen.create_index(
+                [("phone", ASCENDING), ("fingerprint", ASCENDING)],
+                unique=True,
+                background=True,
+            )
+            seen.create_index("expires_at", expireAfterSeconds=0, background=True)
+
             logger.info(
-                "Indexes ensured on collection '%s.%s'",
+                "Indexes ensured on '%s' (collections: %s, liveness_challenges, seen_frames)",
                 settings.DB_NAME,
                 settings.COLLECTION_NAME,
             )
