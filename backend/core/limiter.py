@@ -28,11 +28,18 @@ def _make_limiter() -> Limiter:
         )
         storage_uri = "memory://"
 
-    return Limiter(
+    limiter = Limiter(
         key_func=get_remote_address,
         default_limits=[],
         storage_uri=storage_uri,
     )
+    # RATE_LIMIT_ENABLED was previously declared in settings but never applied.
+    # slowapi honours this flag on the instance, so the decorators stay in place
+    # and simply become no-ops when it is off.
+    limiter.enabled = settings.RATE_LIMIT_ENABLED
+    if not settings.RATE_LIMIT_ENABLED:
+        logger.warning("Rate limiting is DISABLED (RATE_LIMIT_ENABLED=False).")
+    return limiter
 
 
 limiter = _make_limiter()
