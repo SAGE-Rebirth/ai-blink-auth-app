@@ -3,9 +3,9 @@ security.py — JWT access + refresh token creation/verification, admin guard.
 """
 import logging
 from typing import Union, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from core.config import settings
 from core.database import db
@@ -26,7 +26,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/verify-face")
 
 def create_access_token(subject: Union[str, Any]) -> str:
     """Create a short-lived JWT access token (default: 15 minutes)."""
-    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"exp": expire, "sub": str(subject), "type": ACCESS_TOKEN_TYPE}
     token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
     logger.debug("Access token created for subject: %s, expires: %s", subject, expire)
@@ -35,7 +35,7 @@ def create_access_token(subject: Union[str, Any]) -> str:
 
 def create_refresh_token(subject: Union[str, Any]) -> str:
     """Create a long-lived JWT refresh token (default: 7 days)."""
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     payload = {"exp": expire, "sub": str(subject), "type": REFRESH_TOKEN_TYPE}
     token = jwt.encode(payload, settings.effective_refresh_secret, algorithm=ALGORITHM)
     logger.debug("Refresh token created for subject: %s, expires: %s", subject, expire)
@@ -103,18 +103,3 @@ async def require_admin(current_user: dict = Depends(get_current_user)):
             detail="Administrator access required.",
         )
     return current_user
-
-
-def verify_admin_secret(x_admin_secret: str = Header(default="")):
-    """Legacy FastAPI dependency for admin-only endpoints (X-Admin-Secret header)."""
-    if not settings.ADMIN_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Admin access is not configured on this server.",
-        )
-    if x_admin_secret != settings.ADMIN_SECRET:
-        logger.warning("Admin access denied — invalid secret provided")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid admin secret.",
-        )
