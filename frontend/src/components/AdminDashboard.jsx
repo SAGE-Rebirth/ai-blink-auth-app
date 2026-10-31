@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
     getAllUsers, adminDeleteUser, adminUpdateUser,
-    promoteToAdmin, demoteToUser, getErrorMessage
+    promoteToAdmin, demoteToUser, adminUnlockUser, getErrorMessage
 } from '../services/api';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -56,6 +56,19 @@ const AdminDashboard = () => {
     }, []);
 
     useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+    // ── Unlock ─────────────────────────────────────────────────────────
+    // Repeated failed verifications lock an account for LOCKOUT_MINUTES.
+    // Without this the only recovery is waiting it out.
+    const unlockUser = async (user) => {
+        try {
+            await adminUnlockUser(user.phone);
+            setUsers((prev) =>
+                prev.map((u) => (u.phone === user.phone ? { ...u, locked: false } : u))
+            );
+            setSuccess(`${user.name} can sign in again.`);
+        } catch (err) { setError(getErrorMessage(err)); }
+    };
 
     // ── Delete ─────────────────────────────────────────────────────────
     const requestDelete = (user) => {
@@ -116,7 +129,7 @@ const AdminDashboard = () => {
     const isOnlyAdmin = adminCount === 1;
 
     return (
-        <div className="w-full max-w-5xl mx-auto px-2 animate-slide-up">
+        <div className="w-full max-w-6xl mx-auto animate-slide-up">
             {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
 
             {/* Header */}
@@ -153,7 +166,7 @@ const AdminDashboard = () => {
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search by name or phone…"
-                    className="flex-1 bg-slate-800/60 border border-slate-700/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition-all"
+                    className="flex-1 bg-slate-800/60 border border-slate-700/50 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition-all"
                 />
                 <button
                     onClick={fetchUsers}
@@ -172,7 +185,7 @@ const AdminDashboard = () => {
                         <span className="text-slate-400 text-sm">Loading users…</span>
                     </div>
                 ) : filtered.length === 0 ? (
-                    <div className="text-center py-16 text-slate-500">
+                    <div className="text-center py-16 text-slate-400">
                         {search ? '🔍 No users match your search.' : '👥 No registered users found.'}
                     </div>
                 ) : (
@@ -248,10 +261,28 @@ const AdminDashboard = () => {
                                                     </div>
                                                 );
                                             })() : (
-                                                <RoleBadge role={user.role} />
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <RoleBadge role={user.role} />
+                                                    {user.locked && (
+                                                        <span
+                                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                                            title="Locked after repeated failed face verifications"
+                                                        >
+                                                            🔒 Locked
+                                                        </span>
+                                                    )}
+                                                    {user.needs_reenrollment && (
+                                                        <span
+                                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                                                            title={`Face ID was created with the "${user.engine}" engine and cannot be scored by the current one. This user must register their face again.`}
+                                                        >
+                                                            🔄 Re-enrol
+                                                        </span>
+                                                    )}
+                                                </div>
                                             )}
                                         </td>
-                                        <td className="px-4 py-3 text-slate-500 text-xs hidden lg:table-cell">{fmtDate(user.created_at)}</td>
+                                        <td className="px-4 py-3 text-slate-400 text-xs hidden lg:table-cell">{fmtDate(user.created_at)}</td>
                                         <td className="px-4 py-3">
                                             <div className="flex items-center justify-end gap-1.5">
                                                 {editMode === user.phone ? (
@@ -261,9 +292,18 @@ const AdminDashboard = () => {
                                                     </>
                                                 ) : (
                                                     <>
+                                                        {user.locked && (
+                                                            <button
+                                                                onClick={() => unlockUser(user)}
+                                                                className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 text-xs hover:bg-amber-500/20 transition-all"
+                                                                title="Clear the lockout so this user can try again"
+                                                            >
+                                                                Unlock
+                                                            </button>
+                                                        )}
                                                         <button onClick={() => startEdit(user)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs hover:bg-blue-500/20 transition-all opacity-0 group-hover:opacity-100">Edit</button>
                                                         {user.role === 'admin' && isOnlyAdmin ? (
-                                                            <span title="Cannot delete the only admin" className="px-2.5 py-1 rounded-lg bg-slate-700/30 text-slate-500 border border-slate-600/20 text-xs cursor-not-allowed">🔒 Delete</span>
+                                                            <span title="Cannot delete the only admin" className="px-2.5 py-1 rounded-lg bg-slate-700/30 text-slate-400 border border-slate-600/20 text-xs cursor-not-allowed">🔒 Delete</span>
                                                         ) : (
                                                             <button onClick={() => requestDelete(user)} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs hover:bg-red-500/20 transition-all">Delete</button>
                                                         )}
