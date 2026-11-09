@@ -2,6 +2,47 @@
    APP.CSS — Full Component Styles for AI Blink System
    ================================================================= */
 
+/* ─── Design tokens ───────────────────────────────────────────────
+   Every rule below this point referenced these custom properties, but
+   nothing ever defined them — so `var(--accent)` and friends resolved to
+   nothing and the whole stylesheet was inert. That is why components had
+   drifted to inline Tailwind classes. Values are matched to the primary
+   palette in tailwind.config.js so the two layers agree.
+   ───────────────────────────────────────────────────────────────── */
+:root {
+    --accent: #7c6af7;
+    --accent-dim: rgba(124, 106, 247, 0.12);
+    --accent-glow: rgba(124, 106, 247, 0.45);
+
+    --bg-card: rgba(30, 41, 59, 0.6);
+    --bg-input: rgba(51, 65, 85, 0.5);
+
+    --border: rgba(71, 85, 105, 0.5);
+    --border-focus: rgba(124, 106, 247, 0.6);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+
+    --success: #34d399;
+    --success-dim: rgba(52, 211, 153, 0.12);
+    --error: #f87171;
+    --error-dim: rgba(248, 113, 113, 0.12);
+    --warning: #fbbf24;
+    --warning-dim: rgba(251, 191, 36, 0.12);
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --radius-full: 9999px;
+
+    --shadow-card: 0 20px 45px -20px rgba(2, 6, 23, 0.85);
+    --shadow-input: inset 0 1px 2px rgba(2, 6, 23, 0.4);
+
+    --font-base: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
 /* ─── Layout ──────────────────────────────────────────────────── */
 .app-nav {
     position: sticky;
@@ -319,38 +360,6 @@
 
 .webcam-container canvas {
     pointer-events: none;
-}
-
-.blink-status-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.6rem 0.9rem;
-    background: rgba(0, 0, 0, 0.4);
-    border-radius: var(--radius-sm);
-    font-size: 0.82rem;
-}
-
-.blink-status-bar__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    flex-shrink: 0;
-}
-
-.blink-status-bar__dot--detected {
-    background: var(--success);
-    box-shadow: 0 0 6px var(--success);
-}
-
-.blink-status-bar__dot--no-face {
-    background: var(--error);
-}
-
-.blink-status-bar__dot--ready {
-    background: var(--accent);
-    box-shadow: 0 0 6px var(--accent);
 }
 
 /* ─── Progress Bar ────────────────────────────────────────────── */
@@ -708,4 +717,461 @@
     .card {
         padding: 1.75rem 1.25rem;
     }
+}
+/* =================================================================
+   CAMERA STAGE — shared by enrolment and blink verification
+   ================================================================= */
+.stage {
+    width: 100%;
+}
+
+.stage-veil {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    background: rgba(2, 6, 23, 0.72);
+    backdrop-filter: blur(3px);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    z-index: 2;
+}
+
+.stage-veil--busy {
+    background: rgba(2, 6, 23, 0.55);
+}
+
+/* ─── Camera errors ───────────────────────────────────────────── */
+.stage--error .stage-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    text-align: center;
+    padding: 2.25rem 1.5rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+}
+
+.stage-error__icon {
+    font-size: 2rem;
+    line-height: 1;
+}
+
+.stage-error__title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.stage-error__message {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    max-width: 34ch;
+}
+
+/* ─── Status line ─────────────────────────────────────────────── */
+.stage-status {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.6rem 0.9rem;
+    background: rgba(2, 6, 23, 0.45);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    min-height: 2.6rem;
+}
+
+.stage-status__text {
+    flex: 1;
+}
+
+.stage-status__hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.stage-status__dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-muted);
+    transition: background-color 0.25s, box-shadow 0.25s;
+}
+
+.stage-status__dot--neutral { background: var(--text-muted); }
+.stage-status__dot--warn    { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+.stage-status__dot--bad     { background: var(--error);   box-shadow: 0 0 8px var(--error); }
+.stage-status__dot--good    { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.stage-status__dot--active  {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    animation: pulse 0.9s ease-in-out infinite;
+}
+
+/* =================================================================
+   GUIDED ENROLMENT
+   ================================================================= */
+.enroll-prompt {
+    text-align: center;
+    margin-bottom: 0.75rem;
+}
+
+.enroll-prompt__step {
+    display: inline-block;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid rgba(124, 106, 247, 0.3);
+    border-radius: var(--radius-full);
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
+}
+
+.enroll-prompt__label {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.enroll-prompt__detail {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+/* ─── Live quality checklist ──────────────────────────────────── */
+.check-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    justify-content: center;
+    margin-top: 0.7rem;
+    padding: 0;
+    list-style: none;
+}
+
+.check-list__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.74rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-full);
+    border: 1px solid transparent;
+    transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+}
+
+.check-list__item.is-ok {
+    color: var(--success);
+    background: var(--success-dim);
+    border-color: rgba(52, 211, 153, 0.28);
+}
+
+.check-list__item.is-pending {
+    color: var(--text-muted);
+    background: rgba(148, 163, 184, 0.08);
+    border-color: var(--border);
+}
+
+/* ─── Capture progress ────────────────────────────────────────── */
+.capture-dot--active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+.capture-done {
+    text-align: center;
+    padding: 1.5rem 0;
+}
+
+.capture-done__icon {
+    font-size: 2.25rem;
+    color: var(--success);
+    line-height: 1;
+}
+
+.capture-done__text {
+    margin-top: 0.35rem;
+    font-weight: 600;
+    color: var(--success);
+}
+
+/* ─── Per-pose previews with individual retake ────────────────── */
+.preview-slot {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    margin: 0;
+}
+
+.preview-thumb--empty {
+    border-style: dashed;
+    border-color: var(--border);
+    background: rgba(148, 163, 184, 0.06);
+    box-shadow: none;
+}
+
+.preview-slot__retake {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #fff;
+    background: rgba(2, 6, 23, 0.72);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.preview-slot:hover .preview-slot__retake,
+.preview-slot__retake:focus-visible {
+    opacity: 1;
+}
+
+.preview-slot__caption {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+/* =================================================================
+   LOGIN — attempts and lockout
+   ================================================================= */
+.attempt-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.6rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.lockout {
+    text-align: center;
+    padding: 2.25rem 1.5rem;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: var(--radius-md);
+    background: var(--error-dim);
+}
+
+.lockout__icon {
+    font-size: 2rem;
+    line-height: 1;
+}
+
+.lockout__title {
+    margin-top: 0.4rem;
+    font-weight: 600;
+    color: var(--error);
+}
+
+.lockout__detail {
+    margin-top: 0.25rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.lockout__detail strong {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+}
+
+/* =================================================================
+   Motion & small screens
+   ================================================================= */
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .check-list {
+        gap: 0.3rem 0.4rem;
+    }
+
+    .check-list__item {
+        font-size: 0.68rem;
+    }
+
+    .stage-status {
+        font-size: 0.78rem;
+    }
+
+    .stage-status__hint {
+        display: none;
+    }
+
+    .enroll-prompt__label {
+        font-size: 0.92rem;
+    }
+}
+
+/* =================================================================
+   ILLUMINATION CHALLENGE (presentation attack detection)
+   The screen is the light source, so the panel must cover the whole
+   viewport — anything smaller does not put enough light on the face.
+   Held at 2.5 flashes/second (PAD_FLASH_MS = 400) to stay under the
+   3 Hz limit in WCAG 2.3.1 for photosensitive seizure risk.
+   ================================================================= */
+.illumination-flash {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* No transition: the colour must be flat and correct at the moment the
+       frame is grabbed, and a fade would smear one colour into the next. */
+    transition: none;
+}
+
+.illumination-flash__label {
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-full);
+    background: rgba(2, 6, 23, 0.55);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.instruction--muted {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    margin-top: 0.25rem;
+}
+
+/* =================================================================
+   NOTICE PANEL — consent and blocking states
+   ================================================================= */
+.notice {
+    text-align: left;
+    padding: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(2, 6, 23, 0.35);
+}
+
+.notice__icon {
+    font-size: 1.75rem;
+    line-height: 1;
+    text-align: center;
+}
+
+.notice__title {
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-align: center;
+}
+
+.notice__body {
+    font-size: 0.87rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+}
+
+.notice__facts {
+    margin: 0.75rem 0;
+    padding-left: 1.1rem;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    color: var(--text-muted);
+}
+
+.notice__warning {
+    margin-top: 0.75rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: var(--radius-sm);
+    background: var(--warning-dim);
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    font-size: 0.83rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+}
+
+.notice__remember {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.9rem 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.notice__remember input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* =================================================================
+   DESKTOP: the camera earns the extra width
+   ================================================================= */
+@media (min-width: 1024px) {
+
+    /* Cap the preview so it stays a comfortable reading distance rather than
+       filling a 27" monitor. */
+    .webcam-container {
+        max-height: 68vh;
+    }
+
+    .enroll-prompt__label {
+        font-size: 1.1rem;
+    }
+}
+
+@media (max-width: 1023px) {
+
+    /* Below the split breakpoint the guidance follows the camera, so it needs
+       a little separation rather than sitting flush against it. */
+    .stage {
+        margin-bottom: 0.25rem;
+    }
+}
+
+/* Placeholder shown while the lazily-loaded face-tracking chunk arrives. */
+.stage-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    min-height: 240px;
+    aspect-ratio: 4 / 3;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(2, 6, 23, 0.35);
+    color: var(--text-muted);
+    font-size: 0.85rem;
 }
