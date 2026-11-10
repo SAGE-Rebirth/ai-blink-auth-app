@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+/* Inter is loaded from index.html with preconnect + a non-blocking stylesheet.
+   It used to be an @import here, which Lighthouse measured as 670 ms of
+   render-blocking time: the browser cannot paint until an imported stylesheet
+   resolves, and this one lives on a third-party origin. */
 
 @tailwind base;
 @tailwind components;
@@ -89,33 +92,6 @@ canvas {
 
 .animate-pulse-ring {
   animation: pulse 1s infinite;
-}
-
-/* Legacy blink-status styles (used in BlinkDetector) */
-.blink-detector {
-  @apply w-full;
-}
-
-.blink-status-bar {
-  @apply flex items-center gap-2 mt-2 text-sm text-slate-300 px-1;
-}
-
-.blink-status-bar__dot {
-  @apply w-2.5 h-2.5 rounded-full flex-shrink-0;
-  transition: background-color 0.3s;
-}
-
-.blink-status-bar__dot--no-face {
-  @apply bg-slate-500;
-}
-
-.blink-status-bar__dot--ready {
-  @apply bg-emerald-400;
-}
-
-.blink-status-bar__dot--detected {
-  @apply bg-primary-500;
-  animation: pulse 0.8s infinite;
 }
 
 /* Capture dots */
