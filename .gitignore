@@ -3,8 +3,6 @@
 Thumbs.db
 
 # Environment Variables
-.env
-.env.*
 
 # Python
 __pycache__/
@@ -27,7 +25,6 @@ yarn-debug.log*
 yarn-error.log*
 
 # IDEs
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -40,3 +37,4 @@ lighthouse-report*.html
 # Project Specific
 backend/models/
 backend/data/
+config.bat
